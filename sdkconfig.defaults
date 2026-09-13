@@ -1,0 +1,22 @@
+# Scorbot controller firmware defaults (idf.py reads these into a fresh sdkconfig).
+CONFIG_IDF_TARGET="esp32"
+
+# The protocol owns UART0 (the DevKit's USB); logging goes to UART1 on the debug header.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_NUM=1
+CONFIG_ESP_CONSOLE_UART_TX_GPIO=5
+CONFIG_ESP_CONSOLE_UART_RX_GPIO=13
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# 1 ms tick: the current task paces ADC conversions with vTaskDelay(1).
+CONFIG_FREERTOS_HZ=1000
+
+# The 1 kHz control timer fires from the ISR dispatch path.
+CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD=y
+
+# Pulse counter reads from the switch-edge interrupt must not touch flash cache.
+CONFIG_PCNT_CTRL_FUNC_IN_IRAM=y
+CONFIG_GPIO_CTRL_FUNC_IN_IRAM=y
+
+# nanopb: static messages only.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y

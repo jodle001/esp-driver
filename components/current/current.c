@@ -1,0 +1,111 @@
+#include "current.h"
+
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+static const char *TAG = "current";
+#define TIMEOUT_MS 20
+
+/* ADS1015 config register: OS=1 start, MUX single-ended AINn = 0b100+n, PGA, MODE=1
+   single shot, DR=110 (3300 SPS), comparator disabled (COMP_QUE=11). */
+#define REG_CONVERSION 0x00
+#define REG_CONFIG 0x01
+#define PGA_256MV 0x5
+#define PGA_4096V 0x1
+#define DR_3300 0x6
+
+static current_config_t s_cfg;
+static i2c_master_dev_handle_t s_dev_a, s_dev_b;
+static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
+static current_snapshot_t s_state;
+
+static esp_err_t start(i2c_master_dev_handle_t dev, uint8_t channel, uint8_t pga)
+{
+    const uint16_t cfg = (uint16_t)((1u << 15) | ((0x4u + channel) << 12) | (pga << 9) | (1u << 8) | (DR_3300 << 5) | 0x3);
+    const uint8_t buf[3] = {REG_CONFIG, (uint8_t)(cfg >> 8), (uint8_t)cfg};
+    return i2c_master_transmit(dev, buf, sizeof(buf), TIMEOUT_MS);
+}
+
+static esp_err_t read_raw(i2c_master_dev_handle_t dev, int16_t *out)
+{
+    const uint8_t reg = REG_CONVERSION;
+    uint8_t buf[2];
+    const esp_err_t err = i2c_master_transmit_receive(dev, &reg, 1, buf, 2, TIMEOUT_MS);
+    if (err == ESP_OK) {
+        *out = (int16_t)(((uint16_t)buf[0] << 8) | buf[1]) >> 4; /* 12-bit, left justified */
+    }
+    return err;
+}
+
+static void current_task(void *arg)
+{
+    uint8_t ch_a = 0, ch_b = 0; /* 0x48 cycles A0..A3 (CS1-4); 0x49 cycles A0 (CS5), A1 (VSENSE) */
+    for (;;) {
+        bool err = start(s_dev_a, ch_a, PGA_256MV) != ESP_OK;
+        err |= start(s_dev_b, ch_b, ch_b == 0 ? PGA_256MV : PGA_4096V) != ESP_OK;
+        vTaskDelay(1); /* 3300 SPS conversion takes 0.3 ms; the tick is 1 ms (CONFIG_FREERTOS_HZ=1000) */
+        int16_t raw_a = 0, raw_b = 0;
+        err |= read_raw(s_dev_a, &raw_a) != ESP_OK;
+        err |= read_raw(s_dev_b, &raw_b) != ESP_OK;
+
+        float a_mv = raw_a * 0.125f;      /* 256 mV / 2048 */
+        float a = (a_mv - s_cfg.offset_mv) / s_cfg.mv_per_a;
+        if (a < 0.0f) a = 0.0f;
+        float b_val;
+        if (ch_b == 0) {
+            const float mv = raw_b * 0.125f;
+            b_val = (mv - s_cfg.offset_mv) / s_cfg.mv_per_a;
+            if (b_val < 0.0f) b_val = 0.0f;
+        } else {
+            b_val = raw_b * 0.002f * s_cfg.vsense_ratio; /* 4.096 V / 2048 = 2 mV per LSB */
+        }
+
+        portENTER_CRITICAL(&s_lock);
+        s_state.bus_error = err;
+        if (!err) {
+            s_state.current_a[ch_a] += 0.5f * (a - s_state.current_a[ch_a]);
+            if (ch_b == 0) {
+                s_state.current_a[4] += 0.5f * (b_val - s_state.current_a[4]);
+            } else {
+                s_state.rail_v += 0.5f * (b_val - s_state.rail_v);
+                s_state.rail_ok = s_state.rail_v >= s_cfg.rail_ok_v;
+            }
+        }
+        portEXIT_CRITICAL(&s_lock);
+        ch_a = (uint8_t)((ch_a + 1) & 3);
+        ch_b ^= 1;
+    }
+}
+
+esp_err_t current_init(const current_config_t *cfg)
+{
+    s_cfg = *cfg;
+    if (s_cfg.mv_per_a <= 0.0f) s_cfg.mv_per_a = 20.0f;
+    if (s_cfg.vsense_ratio <= 0.0f) s_cfg.vsense_ratio = 4.9f;
+    if (s_cfg.rail_ok_v <= 0.0f) s_cfg.rail_ok_v = 9.0f;
+    i2c_device_config_t dev = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = cfg->addr_a, .scl_speed_hz = cfg->speed_hz};
+    esp_err_t err = i2c_master_bus_add_device(cfg->bus, &dev, &s_dev_a);
+    if (err != ESP_OK) {
+        return err;
+    }
+    dev.device_address = cfg->addr_b;
+    if ((err = i2c_master_bus_add_device(cfg->bus, &dev, &s_dev_b)) != ESP_OK) {
+        return err;
+    }
+    /* Probe both with a config write before the task starts. */
+    if ((err = start(s_dev_a, 0, PGA_256MV)) != ESP_OK || (err = start(s_dev_b, 1, PGA_4096V)) != ESP_OK) {
+        ESP_LOGE(TAG, "ADS1015 not answering: %s", esp_err_to_name(err));
+        return err;
+    }
+    xTaskCreatePinnedToCore(current_task, "current", 3072, NULL, 8, NULL, 0);
+    ESP_LOGI(TAG, "two ADS1015 at 0x%02x/0x%02x, %.0f mV/A", cfg->addr_a, cfg->addr_b, (double)s_cfg.mv_per_a);
+    return ESP_OK;
+}
+
+void current_collect(current_snapshot_t *out)
+{
+    portENTER_CRITICAL(&s_lock);
+    *out = s_state;
+    portEXIT_CRITICAL(&s_lock);
+}

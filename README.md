@@ -1,33 +1,87 @@
-# ESP Driver
-## Overview
-This repository contains the firmware to run a replacement controller for the SCORBOT-ER 4u. Running on the right hardware, connected to the robot, this program runs in tandem with the Commander application and provides it with a socket connection point through which to control the ER-4's motors.
+# esp-driver
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/talos-rit/esp-driver)
+Firmware for the custom ESP32 controller that drives a Scorbot (Bluey first, Bingo
+next) for the ROS 2 stack in `scorbot_ros2`. It speaks the protocol in
+`scorbot_ros2/scorbot_protocol/docs/protocol.md` over USB serial to the Raspberry Pi's
+`ros2_control` hardware interface. The old WiFi/ICD driver for Commander is not built
+any more; its components (`driver_socket`, `driver_wifi`, `motorhat`, `ads1015`) are
+kept only for reference.
 
-## Usage
-### Hardware Setup
-For this program to run, you will need an ESP32 connected to a motor driver module (specific model TBD), four ADS1015 modules for current sensing, and the limit switches of the ER-4. The motors also need to be wired to the motor driver and the current sensors. All of this is detailed in the hardware section of the [Project Documentation](https://github.com/talos-rit/project_documentation) repo.
+## Layout
 
-### Environment and Config
-Once the hardware is set up, install either the [ESP-IDF extension](https://marketplace.visualstudio.com/items?itemName=espressif.esp-idf-extension) for VsCode or the standalone ESP-IDF application if you prefer. This guide shows how to use the VsCode extension, but the app should be similar.
+| Component | What it is | Builds where |
+| --- | --- | --- |
+| `components/scorbot_core` | the controller: state machine, homing, watchdog, soft limits, faults, calibration, the per-joint control law and every message. Portable C, no ESP-IDF calls | device and host |
+| `components/scorbot_proto` | the wire contract: nanopb runtime and generated messages copied from `scorbot_ros2/scorbot_protocol` (`scripts/sync_protocol.sh --check` keeps them identical), COBS + CRC-16 framing in C | device and host |
+| `components/link_uart` | UART0 at 921600: RX task into the frame decoder, non-blocking TX | device |
+| `components/expander` | MCP23017: DIR and SLP out, FLT and limit switches in, INTA on change | device |
+| `components/motor` | five LEDC PWM channels + DIR/SLP through the expander for the Pololu G2 18v17 modules | device |
+| `components/encoder` | quadrature on the pulse counters (unchanged from the previous firmware) | device |
+| `components/limit_switch` | INTA interrupt latches all five counts, then the task reads which switch moved | device |
+| `components/current` | two ADS1015 boards: five motor currents and the motor-rail voltage (e-stop detection) | device |
+| `components/nvs_store` | boot count, robot type and per-joint calibration in NVS | device |
+| `main/` | task wiring and the Kconfig pin map of the rev 0.1 board | device |
+| `test/host/` | host build: plant model, the simulator's behaviour tests run against the real core, and `core_sim`, the core behind a pty | host |
 
-Clone and open the repo with the extension enabled. Note that everything in this guide that is described as being done with the toolbar at the bottom of the screen can also be accomplished with commands in an ESP-IDF Terminal, with the syntax `idf.py {command}`. This terminal can be opened through the command palette (Ctrl+Shift+P, then search and select'ESP-IDF: Open ESP-IDF Terminal')
+## Host build (no ESP-IDF, no hardware)
 
-Now for the controller to function it must connect to wifi, so you will need to give it your network ID and password. Use the menuconfig button (gear icon) in the toolbar to open the SDK Config Editor. Open the 'Talos ESP Driver Configuration' section from the list, then find the 'WiFi SSID' and 'WiFi Password' variables on the right. Enter your network ID and password here and save the configuration before exiting.
+```bash
+cd esp-driver/test/host
+make            # builds and runs test_proto (framing vectors) and test_core (behaviour spec)
+make core_sim   # then: ./build/core_sim --link /tmp/scorbot_core
+```
 
-### Flashing and Running
-Connect the ESP32 to your device and make sure your machine can see it. Use the buttons in the toolbar to build the program, and then flash to the detected device. Now use the monitor button to see logging from the program on the controller.
+`test_core` is the port of `scorbot_esp_sim/test/test_controller_sim.cpp`: the same 19
+scenarios (boot, ping/info, enable rules, watchdog, homing from both sides of the switch
+and again from on the switch, timeouts, soft limits, overcurrent, ClearFault semantics,
+reboot, calibration validation, invert and encoder_invert) plus the hardware-only ones
+(driver FLT line, motor power loss = e-stop, calibration required before Enable, events
+before responses with no seq gaps). `core_sim` puts that core behind a pseudo terminal so
+`scorbot_protocol_cli --port /tmp/scorbot_core ping | info | home | monitor 3` and
+`robot.launch.py mock:=false serial_port:=/tmp/scorbot_core` talk to the real firmware
+logic. Type `power off` on its stdin to press the e-stop, `fault driver 2` to inject.
 
-### Connecting Commander
-Consult the Commander repo for instructions on running and using the app. Once you're ready to add a connection, you will need the esp-driver's IP address and port for the socket connection. Use the device monitor to look through the programs logs, and if it connected to WiFi successfully there will be a message that says `DRIVER_WIFI: got ip:{IP address}` and another that says `driver_socket: Socket bound on 0.0.0.0:{port}`. These are the values you need to give Commander. The camera address is determined from setup of the [Cam Streamer](https://github.com/talos-rit/cam_streamer) repo, but can be set to your device's webcam with a value of 0 for the purpose of testing Commander - Esp Driver interaction. Now you should be able to input commands from Commander and see it processed by the Esp Driver.
+## Device build (ESP-IDF v5.5, target esp32)
 
-## Testing
-### Running Unit Tests
-To run unit tests, open an ESP-IDF Terminal and navigate to the `esp-driver\test` directory. Build the project from this directory by running `idf.py build` (this must be done with the CLI rather than with the toolbar button). Once the testing version of the project has been built you can flash the device normally, and then when you monitor the device you should be presented with a testing menu.
+```bash
+cd esp-driver
+idf.py set-target esp32
+idf.py menuconfig          # "Talos ESP Driver Configuration": only if the board differs from rev 0.1
+idf.py build flash
+idf.py -p /dev/ttyUSB1 monitor   # the console is on UART1 (GPIO 5/13) through a second USB-serial dongle
+```
 
-## Development Notes
-The execution of the program begins with `main\esp_driver.c`'s app_main() function. It is responsible only for initializing the other controller components. No business logic is to be implemented here.
+The protocol owns UART0 (the DevKit's USB socket). Logging goes to UART1 on the debug
+header J3, so plug a 3.3 V USB-serial dongle there to see it; `sdkconfig.defaults`
+sets this up. The status LED: short blip = UNHOMED, 5 Hz = HOMING, solid = READY,
+2.5 Hz = ACTIVE, double blink = FAULT.
 
-Changing and adding menuconfig variables can be done in `Kconfig.projbuild`.
+Bench acceptance, in the order of the design doc
+(`project_documentation/technical/ros2/esp_controller_design.md` section 4.4):
 
-Problems with including files is likely to be related to improper setup of the related components `CMakeLists.txt` file.
+1. DevKit alone, nothing on the board: `scorbot_protocol_cli --port /dev/ttyUSB0 ping`,
+   `info`, `monitor 3`. Without the board the self-test finds no expander or ADC and
+   boots into FAULT (`fault=driver`); the link and the stream still work.
+2. Full board, no robot: the same, now UNHOMED; `enable --allow-unhomed` then silence
+   gives the watchdog fault after 200 ms.
+3. One motor, encoder and switch: velocity and position mode, homing from both sides,
+   current against a clamp meter.
+4. The arm: `robot.launch.py mock:=false`, home, enable, `demo_motion`.
+
+Nothing here has been compiled against ESP-IDF yet (the host build is what has run);
+the first `idf.py build` on a machine with the toolchain is the next step.
+
+## Sync with the ROS side
+
+The protocol files are copied, not linked. After changing `scorbot.proto` or the nanopb
+options in `scorbot_ros2/scorbot_protocol` and regenerating there:
+
+```bash
+components/scorbot_proto/scripts/sync_protocol.sh          # copy
+components/scorbot_proto/scripts/sync_protocol.sh --check  # what CI runs
+```
+
+## Testing on the device
+
+`test/` is the previous firmware's Unity menu project for the low-level components; the
+behaviour tests of this firmware live in `test/host` and run on any machine.

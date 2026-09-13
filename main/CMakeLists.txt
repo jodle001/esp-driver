@@ -1,2 +1,4 @@
 idf_component_register(SRCS "esp_driver.c"
-                    INCLUDE_DIRS "." PRIV_REQUIRES i2c_bus motorhat driver_socket driver_wifi ads1015 encoder limit_switch)
+                       INCLUDE_DIRS "."
+                       PRIV_REQUIRES scorbot_core scorbot_proto link_uart i2c_bus expander motor encoder limit_switch current nvs_store
+                                     esp_driver_gpio esp_timer)

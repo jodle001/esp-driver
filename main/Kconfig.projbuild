@@ -1,95 +1,124 @@
 menu "Talos ESP Driver Configuration"
-    config DRIVER_MOTORHAT_SDA_PIN
-        int "MotorHAT SDA Pin"
-        default 16
-        help
-            GPIO pin number for MotorHAT SDA line.
 
-    config DRIVER_MOTORHAT_SCL_PIN
-        int "MotorHAT SCL Pin"
-        default 17
-        help
-            GPIO pin number for MotorHAT SCL line.
+    comment "Pins follow the rev 0.1 controller board (project_documentation/hardware/scorbot_controller)"
 
-    config DRIVER_MOTORHAT_I2C_BUS
-        int "MotorHAT I2C Bus Number"
-        default 1
-        help
-            I2C bus number for MotorHAT communication.
+    menu "Link to the Pi"
+        config SC_LINK_UART_NUM
+            int "Protocol UART number"
+            range 0 2
+            default 0
+            help
+                UART0 is the DevKit's USB. The console must then be on another UART
+                (sdkconfig.defaults puts it on UART1, GPIO 5/13).
+        config SC_LINK_BAUD
+            int "Protocol baud rate"
+            default 921600
+        config SC_WATCHDOG_MS
+            int "Default command watchdog (ms)"
+            default 200
+    endmenu
 
-    config DRIVER_MOTORHAT_ADDRESS
-        hex "MotorHAT I2C Address"
-        default 0x60
-        help
-            I2C address for the MotorHAT device.
+    menu "Motor PWM (LEDC)"
+        config SC_PWM_FREQ_HZ
+            int "PWM frequency (Hz)"
+            default 20000
+        config SC_PWM1_GPIO
+            int "PWM 1 GPIO"
+            default 16
+        config SC_PWM2_GPIO
+            int "PWM 2 GPIO"
+            default 17
+        config SC_PWM3_GPIO
+            int "PWM 3 GPIO"
+            default 4
+        config SC_PWM4_GPIO
+            int "PWM 4 GPIO"
+            default 18
+        config SC_PWM5_GPIO
+            int "PWM 5 GPIO"
+            default 19
+    endmenu
 
-    config DRIVER_ADS1015_SDA_PIN
-        int "ADS1015 SDA Pin"
-        default 18
-        help
-            GPIO pin number for the ADS1015 SDA line.
+    menu "Encoders (PCNT)"
+        config SC_ENC_GLITCH_NS
+            int "Glitch filter (ns)"
+            default 1000
+        config SC_ENC1_P0_GPIO
+            int "Encoder 1 P0"
+            default 36
+        config SC_ENC1_P1_GPIO
+            int "Encoder 1 P1"
+            default 39
+        config SC_ENC2_P0_GPIO
+            int "Encoder 2 P0"
+            default 34
+        config SC_ENC2_P1_GPIO
+            int "Encoder 2 P1"
+            default 35
+        config SC_ENC3_P0_GPIO
+            int "Encoder 3 P0"
+            default 32
+        config SC_ENC3_P1_GPIO
+            int "Encoder 3 P1"
+            default 33
+        config SC_ENC4_P0_GPIO
+            int "Encoder 4 P0"
+            default 25
+        config SC_ENC4_P1_GPIO
+            int "Encoder 4 P1"
+            default 26
+        config SC_ENC5_P0_GPIO
+            int "Encoder 5 P0"
+            default 27
+        config SC_ENC5_P1_GPIO
+            int "Encoder 5 P1"
+            default 14
+    endmenu
 
-    config DRIVER_ADS1015_SCL_PIN
-        int "ADS1015 SCL Pin"
-        default 19
-        help
-            GPIO pin number for the ADS1015 SCL line.
+    menu "I2C: expander and ADCs"
+        config SC_I2C_SDA_GPIO
+            int "SDA GPIO"
+            default 21
+        config SC_I2C_SCL_GPIO
+            int "SCL GPIO"
+            default 22
+        config SC_I2C_SPEED_HZ
+            int "I2C speed (Hz)"
+            default 400000
+            help
+                The board is laid out for 1 MHz; start at 400 kHz and raise it once the bus
+                is proven.
+        config SC_EXPANDER_ADDRESS
+            hex "MCP23017 address"
+            default 0x20
+        config SC_EXPANDER_INT_GPIO
+            int "MCP23017 INTA GPIO"
+            default 23
+        config SC_SWITCH_ACTIVE_LOW
+            bool "Limit switch pressed reads low"
+            default y
+        config SC_ADC_A_ADDRESS
+            hex "ADS1015 A address (CS1-4)"
+            default 0x48
+        config SC_ADC_B_ADDRESS
+            hex "ADS1015 B address (CS5, VSENSE)"
+            default 0x49
+        config SC_CS_MV_PER_A
+            int "Driver current sense (mV per A)"
+            default 20
+        config SC_CS_OFFSET_MV
+            int "Driver current sense offset at 0 A (mV)"
+            default 50
+        config SC_VSENSE_RATIO_X100
+            int "Motor rail divider ratio x100 (39k/10k = 490)"
+            default 490
+        config SC_RAIL_OK_DV
+            int "Motor rail present above (0.1 V units)"
+            default 90
+    endmenu
 
-    config DRIVER_ADS1015_I2C_BUS
-        int "ADS1015 I2C Bus Number"
-        default 1
-        help
-            I2C bus number for ADS1015 communication.
-
-    config DRIVER_ADS1015_ADDRESS
-        hex "ADS1015 I2C Address"
-        default 0x48
-        help
-            I2C address for the ADS1015 device.
-
-    config DRIVER_ADS1015_RDY_PIN
-        int "ADS1015 RDY Pin"
-        default 21
-        help
-            GPIO pin number for the ADS1015 RDY line.
-
-    config DRIVER_ADS1015_DATA_RATE
-        int "ADS1015 Data Rate"
-        range 0 6
-        default 6
-        help
-            Data rate of ADS1015 in samples per second.
-            0=128SPS, 1=250SPS, 2=490SPS, 3=920SPS,
-            4=1600SPS, 5=2400SPS, 6=3300SPS
-
-    config DRIVER_WIFI_SSID
-        string "WiFi SSID"
-        default "YourSSID"
-        help
-            SSID of the WiFi network to connect to.
-
-    config DRIVER_WIFI_PASSWORD
-        string "WiFi Password"
-        default "YourPassword"
-        help
-            Password for the WiFi network.
-
-    config DRIVER_SERVER_IP
-        string "Server IP Address"
-        default "0.0.0.0"
-        help
-            Listening IP address for the server.
-
-    config DRIVER_SERVER_PORT
-        string "Server Port"
-        default "8080"
-        help
-            Listening port for the server.
-
-    config DRIVER_LIMIT_SWITCH_PIN
-        int "Limit Switch Pin"
-        default 22
-        help
-            GPIO pin for limit switch alerts.
+    config SC_LED_GPIO
+        int "Status LED GPIO"
+        default 2
 
 endmenu
