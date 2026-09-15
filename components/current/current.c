@@ -1,5 +1,7 @@
 #include "current.h"
 
+#include <math.h>
+
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -19,6 +21,33 @@ static current_config_t s_cfg;
 static i2c_master_dev_handle_t s_dev_a, s_dev_b;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static current_snapshot_t s_state;
+static float s_duty[CURRENT_COUNT]; /* magnitude of the commanded duty, from the control task */
+
+void current_set_duty(const float *duty)
+{
+    portENTER_CRITICAL(&s_lock);
+    for (int i = 0; i < CURRENT_COUNT; ++i) {
+        s_duty[i] = fabsf(duty[i]);
+    }
+    portEXIT_CRITICAL(&s_lock);
+}
+
+static float duty_now(int motor)
+{
+    portENTER_CRITICAL(&s_lock);
+    const float d = s_duty[motor];
+    portEXIT_CRITICAL(&s_lock);
+    return d;
+}
+
+/// Amps from a raw +-256 mV conversion that ran while the motor was at `duty`.
+static float amps(int16_t raw, float duty)
+{
+    const float d = duty < s_cfg.min_duty ? s_cfg.min_duty : duty;
+    const float mv = raw * 0.125f / d; /* 256 mV / 2048 per LSB, undo the duty weighting */
+    const float a = (mv - s_cfg.offset_mv) / s_cfg.mv_per_a;
+    return a < 0.0f ? 0.0f : a;
+}
 
 static esp_err_t start(i2c_master_dev_handle_t dev, uint8_t channel, uint8_t pga)
 {
@@ -42,21 +71,23 @@ static void current_task(void *arg)
 {
     uint8_t ch_a = 0, ch_b = 0; /* 0x48 cycles A0..A3 (CS1-4); 0x49 cycles A0 (CS5), A1 (VSENSE) */
     for (;;) {
+        /* The duty while the conversion runs: mean of the value at its start and its end
+           (the control task updates it at 1 kHz, the conversion window is 0.3 ms). */
+        const float d0_a = duty_now(ch_a);
+        const float d0_b = ch_b == 0 ? duty_now(4) : 0.0f;
         bool err = start(s_dev_a, ch_a, PGA_256MV) != ESP_OK;
         err |= start(s_dev_b, ch_b, ch_b == 0 ? PGA_256MV : PGA_4096V) != ESP_OK;
         vTaskDelay(1); /* 3300 SPS conversion takes 0.3 ms; the tick is 1 ms (CONFIG_FREERTOS_HZ=1000) */
         int16_t raw_a = 0, raw_b = 0;
         err |= read_raw(s_dev_a, &raw_a) != ESP_OK;
         err |= read_raw(s_dev_b, &raw_b) != ESP_OK;
+        const float d1_a = duty_now(ch_a);
+        const float d1_b = ch_b == 0 ? duty_now(4) : 0.0f;
 
-        float a_mv = raw_a * 0.125f;      /* 256 mV / 2048 */
-        float a = (a_mv - s_cfg.offset_mv) / s_cfg.mv_per_a;
-        if (a < 0.0f) a = 0.0f;
+        const float a = amps(raw_a, 0.5f * (d0_a + d1_a));
         float b_val;
         if (ch_b == 0) {
-            const float mv = raw_b * 0.125f;
-            b_val = (mv - s_cfg.offset_mv) / s_cfg.mv_per_a;
-            if (b_val < 0.0f) b_val = 0.0f;
+            b_val = amps(raw_b, 0.5f * (d0_b + d1_b));
         } else {
             b_val = raw_b * 0.002f * s_cfg.vsense_ratio; /* 4.096 V / 2048 = 2 mV per LSB */
         }
@@ -84,6 +115,7 @@ esp_err_t current_init(const current_config_t *cfg)
     if (s_cfg.mv_per_a <= 0.0f) s_cfg.mv_per_a = 20.0f;
     if (s_cfg.vsense_ratio <= 0.0f) s_cfg.vsense_ratio = 4.9f;
     if (s_cfg.rail_ok_v <= 0.0f) s_cfg.rail_ok_v = 9.0f;
+    if (s_cfg.min_duty <= 0.0f || s_cfg.min_duty > 1.0f) s_cfg.min_duty = 0.05f;
     i2c_device_config_t dev = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = cfg->addr_a, .scl_speed_hz = cfg->speed_hz};
     esp_err_t err = i2c_master_bus_add_device(cfg->bus, &dev, &s_dev_a);
     if (err != ESP_OK) {
@@ -99,7 +131,8 @@ esp_err_t current_init(const current_config_t *cfg)
         return err;
     }
     xTaskCreatePinnedToCore(current_task, "current", 3072, NULL, 8, NULL, 0);
-    ESP_LOGI(TAG, "two ADS1015 at 0x%02x/0x%02x, %.0f mV/A", cfg->addr_a, cfg->addr_b, (double)s_cfg.mv_per_a);
+    ESP_LOGI(TAG, "two ADS1015 at 0x%02x/0x%02x, %.0f mV/A, duty floor %.2f", cfg->addr_a, cfg->addr_b, (double)s_cfg.mv_per_a,
+             (double)s_cfg.min_duty);
     return ESP_OK;
 }
 

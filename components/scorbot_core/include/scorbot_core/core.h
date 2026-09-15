@@ -72,6 +72,10 @@ typedef struct {
     float soft_limit_overrun_rad;        /* 0.05 past a soft limit -> FAULT_SOFT_LIMIT */
     bool limit_switch_faults_when_active;/* false: Scorbot switches sit mid-range */
     bool require_calibration;            /* true on the device: Enable refused until every joint has one */
+    float total_current_limit_a;         /* 0 = off: an integral limiter winds every joint's velocity
+                                            demand down together while the summed measured current is
+                                            over this (the fuse and the rail copper see the sum, not
+                                            the per-joint limits) and back up while it is under */
     sc_gains_t gains[SC_CORE_MAX_JOINTS];
 } sc_core_config_t;
 
@@ -160,6 +164,7 @@ typedef struct {
     float last_dt_s;
     bool first_tick;
     bool motor_power_seen;
+    float current_scale;          /* velocity-demand factor of the summed-current cap, 1.0 when idle */
     /* outbound ring */
     scorbot_v1_Envelope outbound[SC_CORE_OUTBOUND];
     uint8_t out_head, out_count;

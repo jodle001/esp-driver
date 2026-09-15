@@ -16,6 +16,7 @@
 #define REG_INTCAPA 0x10
 #define REG_GPIOA 0x12
 #define REG_OLATA 0x14
+#define REG_OLATB 0x15
 
 #define IOCON_MIRROR 0x40 /* INTA and INTB are internally connected */
 
@@ -42,17 +43,19 @@ esp_err_t expander_init(expander_t *x, i2c_master_bus_handle_t bus, uint8_t addr
         return err;
     }
     x->olat_a = 0;
-    /* Outputs low before they become outputs: every driver asleep, DIR don't-care. */
+    /* Outputs low before they become outputs: DIR don't-care (the drivers are asleep on
+       the ESP32's SLP line), the unused GPB7 driven low. */
     if ((err = wr(x, REG_OLATA, 0x00)) != ESP_OK) return err;
-    if ((err = wr(x, REG_IODIRA, 0xC0)) != ESP_OK) return err;  /* GPA0-5 out, GPA6-7 in */
-    if ((err = wr(x, REG_IODIRB, 0xFF)) != ESP_OK) return err;  /* all in */
-    if ((err = wr(x, REG_GPPUA, 0xC0)) != ESP_OK) return err;   /* FLT1-2 pull-ups */
-    if ((err = wr(x, REG_GPPUB, 0x07)) != ESP_OK) return err;   /* FLT3-5 pull-ups; switches have board pull-ups */
+    if ((err = wr(x, REG_OLATB, 0x00)) != ESP_OK) return err;
+    if ((err = wr(x, REG_IODIRA, (uint8_t)~EXPANDER_A_OUTPUTS)) != ESP_OK) return err; /* GPA0-3, GPA7 out; GPA4-6 in */
+    if ((err = wr(x, REG_IODIRB, 0x7F)) != ESP_OK) return err;  /* GPB0-6 in; GPB7 out (never an input) */
+    if ((err = wr(x, REG_GPPUA, EXPANDER_A_FLT1 | EXPANDER_A_FLT2)) != ESP_OK) return err; /* FLT1-2 pull-ups */
+    if ((err = wr(x, REG_GPPUB, EXPANDER_B_FLT_MASK)) != ESP_OK) return err; /* FLT3-5 pull-ups; switches have board pull-ups */
     if ((err = wr(x, REG_IOCON, IOCON_MIRROR)) != ESP_OK) return err;
     if ((err = wr(x, REG_INTCONA, 0x00)) != ESP_OK) return err; /* compare against previous value */
     if ((err = wr(x, REG_INTCONB, 0x00)) != ESP_OK) return err;
-    if ((err = wr(x, REG_GPINTENA, 0xC0)) != ESP_OK) return err;
-    if ((err = wr(x, REG_GPINTENB, 0xFF)) != ESP_OK) return err;
+    if ((err = wr(x, REG_GPINTENA, EXPANDER_A_FLT1 | EXPANDER_A_FLT2 | EXPANDER_A_SW5)) != ESP_OK) return err;
+    if ((err = wr(x, REG_GPINTENB, 0x7F)) != ESP_OK) return err;
     uint8_t dummy[2];
     return rd(x, REG_INTCAPA, dummy, 2); /* clear any pending interrupt */
 }

@@ -20,7 +20,7 @@ kept only for reference.
 | `components/limit_switch` | INTA interrupt latches all five counts, then the task reads which switch moved | device |
 | `components/current` | two ADS1015 boards: five motor currents and the motor-rail voltage (e-stop detection) | device |
 | `components/nvs_store` | boot count, robot type and per-joint calibration in NVS | device |
-| `main/` | task wiring and the Kconfig pin map of the rev 0.1 board | device |
+| `main/` | task wiring and the Kconfig pin map of the rev 0.2 board | device |
 | `test/host/` | host build: plant model, the simulator's behaviour tests run against the real core, and `core_sim`, the core behind a pty | host |
 
 ## Host build (no ESP-IDF, no hardware)
@@ -46,7 +46,7 @@ logic. Type `power off` on its stdin to press the e-stop, `fault driver 2` to in
 ```bash
 cd esp-driver
 idf.py set-target esp32
-idf.py menuconfig          # "Talos ESP Driver Configuration": only if the board differs from rev 0.1
+idf.py menuconfig          # "Talos ESP Driver Configuration": only if the board differs from rev 0.2
 idf.py build flash
 idf.py -p /dev/ttyUSB1 monitor   # the console is on UART1 (GPIO 5/13) through a second USB-serial dongle
 ```

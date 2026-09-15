@@ -1,4 +1,5 @@
-// Limit switches and driver fault lines through the MCP23017, with the encoder latch.
+// Limit switches (SW1-4 on GPB3-6, SW5 on GPA6) and driver fault lines through the
+// MCP23017, with the encoder latch.
 //
 // INTA fires on any change of a switch or FLT input. The GPIO interrupt handler reads
 // all five PCNT counts at once (the latch), then a task reads INTF/INTCAP over I2C to

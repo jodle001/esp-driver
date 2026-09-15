@@ -3,6 +3,7 @@
 // behaviours the simulator does not have (driver fault line, motor power loss,
 // calibration required). Tolerances are wider than the simulator's where a real inner
 // loop and a first-order motor replace its ideal integrator.
+#include <math.h>
 #include <stdlib.h>
 
 #include "minitest.h"
@@ -236,6 +237,32 @@ static void command(harness_t *h, int joint, scorbot_v1_ControlMode mode, float 
         c->velocity[joint] = value;
     }
     sc_core_handle(&h->core, &e);
+}
+
+/// Every joint in velocity mode at `fraction` of its own maximum, wrist pitch the other
+/// way (unhomed, so no soft limits: this is the direction with room on every joint).
+static void command_all(harness_t *h, float fraction)
+{
+    scorbot_v1_Envelope e;
+    memset(&e, 0, sizeof(e));
+    e.seq = 1;
+    e.which_payload = scorbot_v1_Envelope_joint_command_tag;
+    scorbot_v1_JointCommand *c = &e.payload.joint_command;
+    c->mode_count = c->position_count = c->velocity_count = N;
+    for (int i = 0; i < N; ++i) {
+        c->mode[i] = scorbot_v1_ControlMode_CONTROL_MODE_VELOCITY;
+        c->velocity[i] = (i == 3 ? -fraction : fraction) * h->cal[i].max_velocity_rad_s;
+    }
+    sc_core_handle(&h->core, &e);
+}
+
+static double summed_current(const harness_t *h)
+{
+    double sum = 0.0;
+    for (int i = 0; i < N; ++i) {
+        sum += h->plant.joint[i].current;
+    }
+    return sum;
 }
 
 /// Keep the watchdog fed at 100 Hz while running.
@@ -773,6 +800,44 @@ static void test_events_precede_responses_without_seq_gaps(void)
     MT_EQ(second.seq, before + 2);
 }
 
+/* ---- rev 0.2 hardware: the summed-current cap ------------------------------------- */
+
+static void test_total_current_cap_scales_every_duty(void)
+{
+    harness_t h;
+    harness_init(&h, NULL);
+    h.cfg.total_current_limit_a = 3.0f; /* five axes at 60 % speed draw about 3.75 A on the plant */
+    sc_core_init(&h.core, &h.cfg);
+    boot(&h);
+    req_enable(&h, true);
+    MT_CHECK(state(&h) == scorbot_v1_SystemState_SYSTEM_STATE_ACTIVE, "enable_unhomed");
+    double peak = 0.0;
+    for (int k = 0; k < 200; ++k) {
+        command_all(&h, 0.6f);
+        run(&h, 0.01);
+        if (k >= 50 && summed_current(&h) > peak) peak = summed_current(&h); /* after the start-up transient */
+    }
+    const double capped = summed_current(&h);
+    MT_CHECK(capped <= 3.0 * 1.15, "summed current %.2f A settles near the 3 A cap", capped);
+    MT_CHECK(peak <= 3.0 * 1.25, "summed current never runs far past the cap (peak %.2f A)", peak);
+    MT_CHECK(h.core.current_scale < 1.0f, "the cap is active (scale %.2f)", (double)h.core.current_scale);
+    MT_CHECK(state(&h) == scorbot_v1_SystemState_SYSTEM_STATE_ACTIVE, "no fault under the cap (%s)", sc_fault_name(h.core.fault));
+    for (int i = 0; i < N; ++i) {
+        const double v = fabs(pj(&h, i)->velocity), vcmd = 0.6 * h.cal[i].max_velocity_rad_s;
+        MT_CHECK(v > 0.2 * vcmd && v < 0.9 * vcmd, "joint %d still moves, slower (%.2f of the command)", i, v / vcmd);
+    }
+    /* Lift the cap: the same command draws more than the cap allowed, and no fault. */
+    h.core.cfg.total_current_limit_a = 0.0f;
+    for (int k = 0; k < 100; ++k) {
+        command_all(&h, 0.6f);
+        run(&h, 0.01);
+    }
+    const double free = summed_current(&h);
+    MT_CHECK(free > 3.0 * 1.15, "without the cap the same command draws %.2f A", free);
+    MT_CHECK(h.core.current_scale == 1.0f, "scale back to 1");
+    MT_CHECK(state(&h) == scorbot_v1_SystemState_SYSTEM_STATE_ACTIVE, "no fault after lifting the cap (%s)", sc_fault_name(h.core.fault));
+}
+
 int main(void)
 {
     MT_RUN(test_boots_into_unhomed_and_streams_state);
@@ -800,5 +865,6 @@ int main(void)
     MT_RUN(test_estop_power_loss_keeps_positions);
     MT_RUN(test_enable_requires_calibration_on_the_device);
     MT_RUN(test_events_precede_responses_without_seq_gaps);
+    MT_RUN(test_total_current_cap_scales_every_duty);
     return MT_SUMMARY();
 }

@@ -1,6 +1,6 @@
 menu "Talos ESP Driver Configuration"
 
-    comment "Pins follow the rev 0.1 controller board (project_documentation/hardware/scorbot_controller)"
+    comment "Pins follow the rev 0.2 controller board (project_documentation/hardware/scorbot_controller)"
 
     menu "Link to the Pi"
         config SC_LINK_UART_NUM
@@ -37,6 +37,23 @@ menu "Talos ESP Driver Configuration"
         config SC_PWM5_GPIO
             int "PWM 5 GPIO"
             default 19
+        config SC_SLP_GPIO
+            int "Driver SLP (sleep) GPIO"
+            default 15
+            help
+                The shared !SLP line of all five G2 drivers, held low through reset by the
+                board's 2.2 k pull-down (R36). GPIO15 is a strapping pin: low at boot only
+                silences the ROM's boot log on UART0, which the protocol link wants anyway.
+        config SC_TOTAL_CURRENT_LIMIT_DA
+            int "Summed motor current cap (0.1 A units, 0 = off)"
+            default 80
+            help
+                While the sum of the measured motor currents is over this, an integral
+                limiter winds every joint's velocity demand down together, and back up once
+                the sum is under it again. It protects the 10 A fuse and the rail copper,
+                which see the sum. Keep it above the largest single current_limit_a plus the
+                running current of the other axes, or the homing hard-stop detector of a
+                joint may never see its threshold.
     endmenu
 
     menu "Encoders (PCNT)"
@@ -109,6 +126,15 @@ menu "Talos ESP Driver Configuration"
         config SC_CS_OFFSET_MV
             int "Driver current sense offset at 0 A (mV)"
             default 50
+        config SC_CS_MIN_DUTY_PCT
+            int "Current sense: smallest duty used in the duty correction (%)"
+            default 5
+            help
+                The G2's CS pin is active only while the H-bridge drives and is low during
+                the PWM off-time, and the ADS1015 averages over its conversion, so the ADC
+                reads duty x (20 mV/A x I + offset). The firmware divides by the commanded
+                duty. Below this duty it divides by this value instead, so a small motor
+                current is under-read rather than amplified from ADC noise.
         config SC_VSENSE_RATIO_X100
             int "Motor rail divider ratio x100 (39k/10k = 490)"
             default 490

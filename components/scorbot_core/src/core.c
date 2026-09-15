@@ -198,6 +198,12 @@ void sc_core_raise_fault(sc_core_t *core, scorbot_v1_FaultCode code, int joint, 
     enter_state(core, scorbot_v1_SystemState_SYSTEM_STATE_FAULT);
 }
 
+/* Summed-current cap: time constant of the integral limiter for a 100 % error, and the
+   floor of the velocity-demand factor (never all the way to zero, so a capped robot
+   still creeps and the current measurement stays meaningful). */
+#define SC_CURRENT_CAP_TAU_S 0.05f
+#define SC_CURRENT_CAP_MIN_SCALE 0.05f
+
 static void raise_fault(sc_core_t *core, scorbot_v1_FaultCode code, int joint)
 {
     sc_core_raise_fault(core, code, joint, false);
@@ -252,6 +258,7 @@ void sc_core_init(sc_core_t *core, const sc_core_config_t *cfg)
     core->fault = scorbot_v1_FaultCode_FAULT_NONE;
     core->last_dt_s = 0.001f;
     core->first_tick = true;
+    core->current_scale = 1.0f;
 }
 
 /* ---- inbound -------------------------------------------------------------------- */
@@ -663,6 +670,23 @@ static void step_joints(sc_core_t *core, float dt, const sc_input_t *in, sc_outp
     const bool enabled = drives_enabled(core);
     const bool enforce_soft = enabled && !core->unhomed_active && core->state != scorbot_v1_SystemState_SYSTEM_STATE_HOMING;
 
+    /* Summed-current cap: the fuse and the rail copper see the sum of every motor. An
+       integral limiter winds one factor down while the measured sum is over the limit
+       and back up while it is under; the factor multiplies every joint's velocity
+       demand, so the loops keep tracking (slower) and a joint pushing against something
+       has its demand, and with it its current, wound down along with the rest. Scaling
+       the duties instead would not work: the velocity loop compensates it. */
+    float scale = 1.0f;
+    if (core->cfg.total_current_limit_a > 0.0f) {
+        const float cap = core->cfg.total_current_limit_a;
+        float sum = 0.0f;
+        for (uint8_t i = 0; i < core->joint_count; ++i) {
+            sum += core->joint[i].current;
+        }
+        scale = clampf(core->current_scale + (cap - sum) / cap * dt / SC_CURRENT_CAP_TAU_S, SC_CURRENT_CAP_MIN_SCALE, 1.0f);
+    }
+    core->current_scale = scale;
+
     for (uint8_t i = 0; i < core->joint_count; ++i) {
         sc_joint_t *j = &core->joint[i];
         const float vmax = j->cal.max_velocity_rad_s > 0.0f ? j->cal.max_velocity_rad_s : 0.0f;
@@ -697,6 +721,7 @@ static void step_joints(sc_core_t *core, float dt, const sc_input_t *in, sc_outp
             v_des = 0.0f;
             break;
         }
+        v_des *= scale; /* the summed-current cap */
         if (enforce_soft) {
             /* Never exceed the speed that can still stop before the limit. */
             const float room_up = j->cal.soft_limit_max_rad - j->position;

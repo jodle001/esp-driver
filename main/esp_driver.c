@@ -1,5 +1,5 @@
 // Scorbot ESP32 controller firmware: wires the portable core (components/scorbot_core)
-// to the rev 0.1 board. Pins, addresses and scales come from Kconfig ("Talos ESP Driver
+// to the rev 0.2 board. Pins, addresses and scales come from Kconfig ("Talos ESP Driver
 // Configuration"); nothing robot-specific is compiled in, the Pi pushes calibration.
 //
 // Tasks:
@@ -123,6 +123,7 @@ static void control_task(void *arg)
         if (motor_apply(&s_motor, out.duty, out.brake, out.drives_enabled) != ESP_OK) {
             sc_core_raise_fault(&s_core, scorbot_v1_FaultCode_FAULT_DRIVER, -1, false);
         }
+        current_set_duty(out.duty); /* the current task divides its next conversions by these */
 
         /* Messages: JointState at 100 Hz, responses, events. */
         while (sc_core_pop(&s_core, &e)) {
@@ -176,6 +177,7 @@ void app_main(void)
     s_cfg.persist.robot_type = persist_robot_type;
     s_cfg.watchdog_ms = CONFIG_SC_WATCHDOG_MS;
     s_cfg.require_calibration = true;
+    s_cfg.total_current_limit_a = CONFIG_SC_TOTAL_CURRENT_LIMIT_DA / 10.0f;
     sc_core_init(&s_core, &s_cfg);
 
     /* The link comes up before the hardware so a failed self-test is still reported. */
@@ -214,10 +216,12 @@ void app_main(void)
         ESP_ERROR_CHECK(encoder_start(&s_encoders[i]));
     }
 
-    /* Motors: LEDC PWM, DIR/SLP through the expander (SLP low until the core says so). */
+    /* Motors: LEDC PWM, DIR through the expander, the shared SLP on its own GPIO (low
+       until the core says so). */
     motor_config_t mc = {
         .pwm_gpio = {CONFIG_SC_PWM1_GPIO, CONFIG_SC_PWM2_GPIO, CONFIG_SC_PWM3_GPIO, CONFIG_SC_PWM4_GPIO, CONFIG_SC_PWM5_GPIO},
         .pwm_freq_hz = CONFIG_SC_PWM_FREQ_HZ,
+        .slp_gpio = CONFIG_SC_SLP_GPIO,
         .expander = &s_expander,
     };
     err = motor_init(&s_motor, &mc);
@@ -256,6 +260,7 @@ void app_main(void)
         .offset_mv = CONFIG_SC_CS_OFFSET_MV,
         .vsense_ratio = CONFIG_SC_VSENSE_RATIO_X100 / 100.0f,
         .rail_ok_v = CONFIG_SC_RAIL_OK_DV / 10.0f,
+        .min_duty = CONFIG_SC_CS_MIN_DUTY_PCT / 100.0f,
     };
     err = current_init(&cc);
     if (err != ESP_OK) {

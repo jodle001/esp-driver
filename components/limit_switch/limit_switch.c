@@ -44,7 +44,7 @@ static void apply_ports(uint8_t gpio_a, uint8_t gpio_b, const int32_t *latched, 
     s_state.fault_mask = motor_faults_from_ports(gpio_a, gpio_b);
     s_state.bus_error = false;
     for (int i = 0; i < LIMIT_SWITCH_COUNT; ++i) {
-        const bool level = (gpio_b >> (3 + i)) & 1u;
+        const bool level = expander_switch_level(i, gpio_a, gpio_b); /* SW1-4 on GPB3-6, SW5 on GPA6 */
         const bool pressed = s_cfg.active_low ? !level : level;
         if (pressed != s_state.joint[i].pressed) {
             if (now - s_last_edge_us[i] < (int64_t)s_cfg.debounce_us && !from_edge) {
