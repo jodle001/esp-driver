@@ -13,7 +13,7 @@ kept only for reference.
 | --- | --- | --- |
 | `components/scorbot_core` | the controller: state machine, homing, watchdog, soft limits, faults, calibration, the per-joint control law and every message. Portable C, no ESP-IDF calls | device and host |
 | `components/scorbot_proto` | the wire contract: nanopb runtime and generated messages copied from `scorbot_ros2/scorbot_protocol` (`scripts/sync_protocol.sh --check` keeps them identical), COBS + CRC-16 framing in C | device and host |
-| `components/link_uart` | UART0 at 921600: RX task into the frame decoder, non-blocking TX | device |
+| `components/link_uart` | the protocol UART at 921600 (UART1, GPIO 5/13, to the Pi's ribbon header on the rev 0.3 board): RX task into the frame decoder, non-blocking TX | device |
 | `components/expander` | MCP23017: DIR and SLP out, FLT and limit switches in, INTA on change | device |
 | `components/motor` | five LEDC PWM channels + DIR/SLP through the expander for the Pololu G2 18v17 modules | device |
 | `components/encoder` | quadrature on the pulse counters (unchanged from the previous firmware) | device |
@@ -48,18 +48,21 @@ cd esp-driver
 idf.py set-target esp32
 idf.py menuconfig          # "Talos ESP Driver Configuration": only if the board differs from rev 0.2
 idf.py build flash
-idf.py -p /dev/ttyUSB1 monitor   # the console is on UART1 (GPIO 5/13) through a second USB-serial dongle
+idf.py monitor                   # the console is on UART0, the DevKit's USB
 ```
 
-The protocol owns UART0 (the DevKit's USB socket). Logging goes to UART1 on the debug
-header J3, so plug a 3.3 V USB-serial dongle there to see it; `sdkconfig.defaults`
-sets this up. The status LED: short blip = UNHOMED, 5 Hz = HOMING, solid = READY,
+The protocol link is UART1 (GPIO 5 TX, 13 RX at 921600): on the rev 0.3 board the Pi sits
+on the board and its own UART reaches those pins through the 40-pin ribbon header J6; the
+3-pin header J3 carries the same two lines for a 3.3 V USB-serial dongle when no Pi is
+fitted (one or the other). The DevKit's USB is the console and the flashing port, from a
+laptop or from the Pi's USB. `SC_LINK_UART_NUM=0` in menuconfig moves the link onto the
+DevKit's USB for a bench laptop instead (then move the console). The status LED: short blip = UNHOMED, 5 Hz = HOMING, solid = READY,
 2.5 Hz = ACTIVE, double blink = FAULT.
 
 Bench acceptance, in the order of the design doc
 (`project_documentation/technical/ros2/esp_controller_design.md` section 4.4):
 
-1. DevKit alone, nothing on the board: `scorbot_protocol_cli --port /dev/ttyUSB0 ping`,
+1. DevKit alone, nothing on the board (link on the DevKit's USB, `SC_LINK_UART_NUM=0`): `scorbot_protocol_cli --port /dev/ttyUSB0 ping`,
    `info`, `monitor 3`. Without the board the self-test finds no expander or ADC and
    boots into FAULT (`fault=driver`); the link and the stream still work.
 2. Full board, no robot: the same, now UNHOMED; `enable --allow-unhomed` then silence

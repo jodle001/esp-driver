@@ -181,7 +181,8 @@ void app_main(void)
     sc_core_init(&s_core, &s_cfg);
 
     /* The link comes up before the hardware so a failed self-test is still reported. */
-    const link_uart_config_t link = {.uart_num = CONFIG_SC_LINK_UART_NUM, .baud = CONFIG_SC_LINK_BAUD, .tx_gpio = -1, .rx_gpio = -1};
+    const link_uart_config_t link = {.uart_num = CONFIG_SC_LINK_UART_NUM, .baud = CONFIG_SC_LINK_BAUD,
+                                     .tx_gpio = CONFIG_SC_LINK_TX_GPIO, .rx_gpio = CONFIG_SC_LINK_RX_GPIO};
     ESP_ERROR_CHECK(link_uart_init(&link));
 
     /* I2C bus: expander, two ADCs. */

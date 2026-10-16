@@ -15,9 +15,9 @@ extern "C" {
 #endif
 
 typedef struct {
-    int uart_num;      /* 0 */
+    int uart_num;      /* 1 on the rev 0.3 board (GPIO 5/13 to the Pi's ribbon header); 0 = the DevKit's USB */
     int baud;          /* 921600 */
-    int tx_gpio;       /* -1 = keep the default pins (1/3 on UART0) */
+    int tx_gpio;       /* -1 = keep the UART's default pins (1/3 on UART0, 10/9 on UART1: never those, they are the flash) */
     int rx_gpio;
 } link_uart_config_t;
 

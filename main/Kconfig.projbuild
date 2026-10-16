@@ -6,10 +6,22 @@ menu "Talos ESP Driver Configuration"
         config SC_LINK_UART_NUM
             int "Protocol UART number"
             range 0 2
-            default 0
+            default 1
             help
-                UART0 is the DevKit's USB. The console must then be on another UART
-                (sdkconfig.defaults puts it on UART1, GPIO 5/13).
+                Rev 0.3 board (Oct 16 2026): the Pi sits on the board and its UART reaches
+                UART1 on GPIO 5 (TX) / 13 (RX) through the 40-pin ribbon header J6 (or a
+                3.3 V USB-serial dongle on the J3 header). UART0 is the DevKit's USB: the
+                console and flashing. Set 0 to run the link over the DevKit's USB from a
+                bench laptop instead; the console must then move to another UART
+                (Component config > ESP System Settings > Channel for console output).
+        config SC_LINK_TX_GPIO
+            int "Protocol UART TX GPIO (-1 = the UART's default pin)"
+            range -1 33
+            default 5
+        config SC_LINK_RX_GPIO
+            int "Protocol UART RX GPIO (-1 = the UART's default pin)"
+            range -1 39
+            default 13
         config SC_LINK_BAUD
             int "Protocol baud rate"
             default 921600
