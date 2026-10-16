@@ -5,9 +5,12 @@
 //   core_sim                          # prints the pty path
 //   core_sim --link /tmp/scorbot_core # also creates a stable symlink to it
 //   core_sim --robot er_v --speed 2.0 --no-calibration
+//   core_sim --acl | --protobuf       # force the link protocol (default: decided from the first bytes)
 //
 // Then: scorbot_protocol_cli --port /tmp/scorbot_core ping | info | home | monitor 3
 // or:   ros2 launch scorbot_bringup robot.launch.py mock:=false serial_port:=/tmp/scorbot_core
+// or:   the operator (reference_only/operator) with scorbot_dev: /tmp/scorbot_core, which
+//       speaks the Eshed dialect (scorbot_core/acl.h); or by hand: picocom /tmp/scorbot_core
 //
 // Commands on stdin while running:
 //   status | power on|off (the e-stop) | fault <driver|encoder|...> [joint] | reboot | quit
@@ -24,7 +27,9 @@
 #include <unistd.h>
 
 #include "plant.h"
+#include "scorbot_core/acl.h"
 #include "scorbot_core/core.h"
+#include "scorbot_core/link_mode.h"
 #include "scorbot_proto/envelope.h"
 #include "scorbot_proto/framing.h"
 
@@ -41,6 +46,9 @@ typedef struct {
     bool require_calibration;
     int master;
     unsigned long rx_frames, tx_frames, tx_errors;
+    sc_link_sniffer_t sniffer;
+    sc_acl_t acl;
+    sc_link_mode_t mode;
 } app_t;
 
 static const char *kNames[N] = {"base_joint", "shoulder_joint", "elbow_joint", "wrist_pitch_joint", "wrist_roll_joint"};
@@ -70,6 +78,44 @@ static void boot_core(app_t *a)
     a->cfg.firmware_version = "core_sim-0.1.0";
     a->cfg.require_calibration = a->require_calibration;
     sc_core_init(&a->core, &a->cfg);
+    sc_acl_config_t ac;
+    sc_acl_config_default(&ac);
+    sc_acl_init(&a->acl, &a->core, &ac);
+}
+
+static const char *mode_name(sc_link_mode_t m)
+{
+    return m == SC_LINK_ACL ? "acl" : m == SC_LINK_PROTOBUF ? "protobuf" : "undecided";
+}
+
+static void on_payload(void *ctx, const uint8_t *payload, size_t n);
+
+/// Bytes from the link: to the protobuf decoder or the ACL front-end, once that is known.
+static void on_link_bytes(app_t *a, sc_stream_decoder_t *decoder, const uint8_t *buf, size_t n)
+{
+    size_t k = 0;
+    if (a->mode == SC_LINK_UNDECIDED) {
+        size_t used = 0;
+        a->mode = sc_link_sniffer_feed(&a->sniffer, buf, n, &used);
+        if (a->mode == SC_LINK_UNDECIDED) {
+            return;
+        }
+        uint8_t held[SC_LINK_SNIFF_MAX];
+        const size_t h = sc_link_sniffer_take(&a->sniffer, held, sizeof(held));
+        printf("link: %s\n", mode_name(a->mode));
+        fflush(stdout);
+        if (a->mode == SC_LINK_ACL) {
+            sc_acl_feed(&a->acl, held, h);
+        } else {
+            sc_stream_decoder_feed(decoder, held, h, on_payload, a);
+        }
+        k = used;
+    }
+    if (a->mode == SC_LINK_ACL) {
+        sc_acl_feed(&a->acl, buf + k, n - k);
+    } else {
+        sc_stream_decoder_feed(decoder, buf + k, n - k, on_payload, a);
+    }
 }
 
 static double now_s(void)
@@ -108,10 +154,19 @@ static scorbot_v1_FaultCode parse_fault(const char *s)
 
 static void print_status(const app_t *a)
 {
-    printf("state=%s fault=%s boot=%u wd=%ums rx_cmd=%u ign=%u | rx=%lu tx=%lu tx_err=%lu power=%s\n",
+    printf("state=%s fault=%s boot=%u wd=%ums rx_cmd=%u ign=%u | link=%s rx=%lu tx=%lu tx_err=%lu power=%s\n",
            sc_state_name(a->core.state), sc_fault_name(a->core.fault), a->cfg.boot_count, a->core.watchdog_ms,
-           a->core.commands_received, a->core.commands_ignored, a->rx_frames, a->tx_frames, a->tx_errors,
-           a->plant.motor_power ? "on" : "OFF");
+           a->core.commands_received, a->core.commands_ignored, mode_name(a->mode), a->rx_frames, a->tx_frames,
+           a->tx_errors, a->plant.motor_power ? "on" : "OFF");
+    if (a->mode == SC_LINK_ACL) {
+        printf("  acl: lines=%u unknown=%u prompts=%u jog_bytes=%u manual=%d moving=%d speed=%u%% target=",
+               a->acl.lines, a->acl.unknown_lines, a->acl.prompts, a->acl.jog_bytes, a->acl.manual, a->acl.moving,
+               a->acl.speed_percent);
+        for (int i = 0; i < N; ++i) {
+            printf("%s%ld", i ? "," : "", (long)a->acl.target[i]);
+        }
+        printf("\n");
+    }
     for (int i = 0; i < N; ++i) {
         const plant_joint_t *p = &a->plant.joint[i];
         const sc_joint_t *j = &a->core.joint[i];
@@ -166,6 +221,7 @@ int main(int argc, char **argv)
     const char *link_path = NULL;
     double speed = 1.0;
     bool quiet = false;
+    sc_link_mode_t forced = SC_LINK_UNDECIDED;
     strcpy(a.robot_type, "er_4pc");
     a.boot_count = 1;
     for (int i = 0; i < N; ++i) {
@@ -181,6 +237,10 @@ int main(int argc, char **argv)
             speed = atof(argv[++i]);
         } else if (strcmp(argv[i], "--quiet") == 0) {
             quiet = true;
+        } else if (strcmp(argv[i], "--acl") == 0) {
+            forced = SC_LINK_ACL;
+        } else if (strcmp(argv[i], "--protobuf") == 0) {
+            forced = SC_LINK_PROTOBUF;
         } else if (strcmp(argv[i], "--no-calibration") == 0) {
             /* Like a fresh device: nothing in NVS, the Pi must push calibration first. */
             for (int k = 0; k < N; ++k) {
@@ -188,12 +248,14 @@ int main(int argc, char **argv)
             }
             a.require_calibration = true;
         } else {
-            fprintf(stderr, "usage: core_sim [--link PATH] [--robot er_4pc|er_v] [--speed X] [--no-calibration] [--quiet]\n");
+            fprintf(stderr, "usage: core_sim [--link PATH] [--robot er_4pc|er_v] [--speed X] [--no-calibration] [--quiet] [--acl|--protobuf]\n");
             return strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0 ? 0 : 64;
         }
     }
     plant_init(&a.plant, N, a.cal, NULL, NULL);
     boot_core(&a);
+    sc_link_sniffer_init(&a.sniffer);
+    a.mode = forced;
 
     int master = -1, slave = -1;
     char name[128] = {0};
@@ -214,8 +276,8 @@ int main(int argc, char **argv)
         }
     }
     a.master = master;
-    printf("core_sim: robot=%s serial=%s%s%s speed=%.2f%s\n", a.robot_type, name, link_path ? " link=" : "",
-           link_path ? link_path : "", speed, a.require_calibration ? " (no calibration until pushed)" : "");
+    printf("core_sim: robot=%s serial=%s%s%s speed=%.2f link=%s%s\n", a.robot_type, name, link_path ? " link=" : "",
+           link_path ? link_path : "", speed, mode_name(a.mode), a.require_calibration ? " (no calibration until pushed)" : "");
     printf("type 'status', 'power off', 'fault overcurrent 2', 'reboot' or 'quit'\n");
     fflush(stdout);
 
@@ -235,7 +297,7 @@ int main(int argc, char **argv)
         uint8_t buf[512];
         ssize_t n;
         while ((n = read(master, buf, sizeof(buf))) > 0) {
-            sc_stream_decoder_feed(&decoder, buf, (size_t)n, on_payload, &a);
+            on_link_bytes(&a, &decoder, buf, (size_t)n);
         }
 
         /* Fixed 1 ms core ticks, as many as wall-clock time (times speed) asks for. */
@@ -251,9 +313,21 @@ int main(int argc, char **argv)
             plant_read(&a.plant, &in);
             sc_core_tick(&a.core, 0.001f, &in, &out);
             plant_step(&a.plant, &out, 0.001);
+            if (a.mode == SC_LINK_ACL) {
+                sc_acl_tick(&a.acl, 0.001f); /* drives the core and eats its stream */
+            }
             accumulated -= 0.001;
         }
 
+        if (a.mode == SC_LINK_ACL) {
+            uint8_t text[256];
+            size_t tn;
+            while ((tn = sc_acl_read(&a.acl, text, sizeof(text))) > 0) {
+                if (write(master, text, tn) != (ssize_t)tn) {
+                    ++a.tx_errors;
+                }
+            }
+        }
         scorbot_v1_Envelope e;
         while (sc_core_pop(&a.core, &e)) {
             uint8_t frame[SC_MAX_FRAME];

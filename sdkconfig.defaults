@@ -1,9 +1,10 @@
 # Scorbot controller firmware defaults (idf.py reads these into a fresh sdkconfig).
 CONFIG_IDF_TARGET="esp32"
 
-# The protocol owns UART0 (the DevKit's USB); logging goes to UART1 on the debug header.
-# Console on UART0 (the DevKit's USB) at the default 115200: since Oct 16 2026 the protocol link is
-# UART1 (GPIO 5/13) to the Pi's ribbon header, see main/Kconfig.projbuild "Link to the Pi".
+# The link to the Pi owns UART0 (the DevKit's USB) and there is no console: the Eshed box has none,
+# and UART1's pins carry the slide encoder on the rev 0.3 board (Oct 16 2026). For a bench build with
+# ESP_LOG on the USB, set the console back to UART0 and SC_LINK_UART_NUM to 1 with pins of your own.
+CONFIG_ESP_CONSOLE_NONE=y
 
 # 1 ms tick: the current task paces ADC conversions with vTaskDelay(1).
 CONFIG_FREERTOS_HZ=1000

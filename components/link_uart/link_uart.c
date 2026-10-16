@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "scorbot_proto/framing.h"
 
@@ -11,35 +12,44 @@ static const char *TAG = "link_uart";
 
 #define RX_BUF 2048
 #define TX_BUF 4096
-#define INBOUND_DEPTH 8
+#define STREAM_BUF 2048
+#define EVENT_QUEUE 16
 
 static link_uart_config_t s_cfg;
-static QueueHandle_t s_inbound;
+static QueueHandle_t s_events;
+static StreamBufferHandle_t s_rx;
 static link_uart_stats_t s_stats;
-static sc_stream_decoder_t s_decoder;
-
-static void on_payload(void *ctx, const uint8_t *payload, size_t n)
-{
-    scorbot_v1_Envelope e;
-    if (!sc_envelope_decode(payload, n, &e)) {
-        ++s_stats.rx_decode_errors;
-        return;
-    }
-    ++s_stats.rx_envelopes;
-    if (xQueueSend(s_inbound, &e, 0) != pdTRUE) {
-        ++s_stats.rx_dropped; /* the control loop is not keeping up; newest command lost */
-    }
-}
 
 static void rx_task(void *arg)
 {
+    uart_event_t ev;
     uint8_t buf[256];
     for (;;) {
-        const int n = uart_read_bytes(s_cfg.uart_num, buf, sizeof(buf), pdMS_TO_TICKS(5));
-        if (n > 0) {
-            sc_stream_decoder_feed(&s_decoder, buf, (size_t)n, on_payload, NULL);
-            s_stats.crc_errors = s_decoder.stats.crc_errors;
-            s_stats.cobs_errors = s_decoder.stats.cobs_errors;
+        if (xQueueReceive(s_events, &ev, pdMS_TO_TICKS(100)) != pdTRUE) {
+            continue;
+        }
+        switch (ev.type) {
+        case UART_DATA: {
+            int n;
+            while ((n = uart_read_bytes(s_cfg.uart_num, buf, sizeof(buf), 0)) > 0) {
+                const size_t sent = xStreamBufferSend(s_rx, buf, (size_t)n, 0);
+                s_stats.rx_bytes += (uint32_t)sent;
+                s_stats.rx_dropped += (uint32_t)n - (uint32_t)sent;
+            }
+            break;
+        }
+        case UART_FRAME_ERR:
+        case UART_PARITY_ERR:
+            ++s_stats.frame_errors;
+            break;
+        case UART_FIFO_OVF:
+        case UART_BUFFER_FULL:
+            ++s_stats.overflows;
+            uart_flush_input(s_cfg.uart_num);
+            xQueueReset(s_events);
+            break;
+        default:
+            break;
         }
     }
 }
@@ -47,20 +57,19 @@ static void rx_task(void *arg)
 esp_err_t link_uart_init(const link_uart_config_t *cfg)
 {
     s_cfg = *cfg;
-    sc_stream_decoder_init(&s_decoder);
-    s_inbound = xQueueCreate(INBOUND_DEPTH, sizeof(scorbot_v1_Envelope));
-    if (!s_inbound) {
+    s_rx = xStreamBufferCreate(STREAM_BUF, 1);
+    if (!s_rx) {
         return ESP_ERR_NO_MEM;
     }
     const uart_config_t uc = {
-        .baud_rate = cfg->baud ? cfg->baud : 921600,
+        .baud_rate = cfg->baud ? cfg->baud : 9600,
         .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE, /* the operator uses XON/XOFF, which the dialect never emits */
         .source_clk = UART_SCLK_DEFAULT,
     };
-    esp_err_t err = uart_driver_install(cfg->uart_num, RX_BUF, TX_BUF, 0, NULL, 0);
+    esp_err_t err = uart_driver_install(cfg->uart_num, RX_BUF, TX_BUF, EVENT_QUEUE, &s_events, 0);
     if (err != ESP_OK) {
         return err;
     }
@@ -77,26 +86,45 @@ esp_err_t link_uart_init(const link_uart_config_t *cfg)
     return ESP_OK;
 }
 
-bool link_uart_receive(scorbot_v1_Envelope *out)
+size_t link_uart_read(uint8_t *out, size_t cap) { return xStreamBufferReceive(s_rx, out, cap, 0); }
+
+bool link_uart_write(const uint8_t *data, size_t n)
 {
-    return xQueueReceive(s_inbound, out, 0) == pdTRUE;
+    size_t free_bytes = 0;
+    if (n == 0) {
+        return true;
+    }
+    if (uart_get_tx_buffer_free_size(s_cfg.uart_num, &free_bytes) != ESP_OK || free_bytes < n) {
+        s_stats.tx_dropped += (uint32_t)n;
+        return false;
+    }
+    if (uart_write_bytes(s_cfg.uart_num, data, n) != (int)n) {
+        s_stats.tx_dropped += (uint32_t)n;
+        return false;
+    }
+    s_stats.tx_bytes += (uint32_t)n;
+    return true;
 }
 
 bool link_uart_send(const scorbot_v1_Envelope *e)
 {
     uint8_t frame[SC_MAX_FRAME];
     const size_t len = sc_envelope_to_frame(e, frame, sizeof(frame));
-    size_t free_bytes = 0;
-    if (len == 0 || uart_get_tx_buffer_free_size(s_cfg.uart_num, &free_bytes) != ESP_OK || free_bytes < len) {
+    if (len == 0) {
         ++s_stats.tx_dropped;
         return false;
     }
-    if (uart_write_bytes(s_cfg.uart_num, frame, len) != (int)len) {
-        ++s_stats.tx_dropped;
-        return false;
+    return link_uart_write(frame, len);
+}
+
+esp_err_t link_uart_set_baud(int baud)
+{
+    const esp_err_t err = uart_set_baudrate(s_cfg.uart_num, (uint32_t)baud);
+    if (err == ESP_OK) {
+        s_cfg.baud = baud;
+        ESP_LOGI(TAG, "UART%d now at %d baud", s_cfg.uart_num, baud);
     }
-    ++s_stats.tx_envelopes;
-    return true;
+    return err;
 }
 
 void link_uart_stats(link_uart_stats_t *out) { *out = s_stats; }

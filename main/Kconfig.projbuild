@@ -1,34 +1,74 @@
 menu "Talos ESP Driver Configuration"
 
-    comment "Pins follow the rev 0.2 controller board (project_documentation/hardware/scorbot_controller)"
+    comment "Pins follow the rev 0.3 controller board (project_documentation/hardware); expander bit map still rev 0.2"
 
     menu "Link to the Pi"
-        config SC_LINK_UART_NUM
-            int "Protocol UART number"
-            range 0 2
-            default 1
+        choice SC_LINK_MODE
+            prompt "Protocol on the link"
+            default SC_LINK_MODE_ACL
             help
-                Rev 0.3 board (Oct 16 2026): the Pi sits on the board and its UART reaches
-                UART1 on GPIO 5 (TX) / 13 (RX) through the 40-pin ribbon header J6 (or a
-                3.3 V USB-serial dongle on the J3 header). UART0 is the DevKit's USB: the
-                console and flashing. Set 0 to run the link over the DevKit's USB from a
-                bench laptop instead; the console must then move to another UART
-                (Component config > ESP System Settings > Channel for console output).
+                Decided Oct 16 2026: the Pi runs the operator unchanged, so the link speaks
+                the Eshed box's serial dialect (the ACL subset, scorbot_core/acl.h) at
+                9600 8N1 over the DevKit's USB. The protobuf/COBS link of the ROS 2 stack
+                remains as a second mode at 921600. "Auto" starts in the dialect at 9600 and
+                switches to protobuf at 921600 when the first bytes are not text (a 0x00
+                frame delimiter, or framing errors from a 921600 stream read at 9600).
+            config SC_LINK_MODE_ACL
+                bool "Eshed dialect (ACL text, 9600): the operator"
+            config SC_LINK_MODE_PROTOBUF
+                bool "protobuf/COBS (921600): the ROS 2 hardware interface"
+            config SC_LINK_MODE_AUTO
+                bool "auto: decide from the first bytes (untested on a device)"
+        endchoice
+        config SC_LINK_UART_NUM
+            int "Link UART number"
+            range 0 2
+            default 0
+            help
+                0 = the DevKit's USB (CP2102), the rev 0.3 board's Pi link and flashing
+                port; the console is off (sdkconfig.defaults). IO5/IO13 (UART1) carry the
+                slide encoder since Oct 16 2026, so there is no other UART to spare.
         config SC_LINK_TX_GPIO
-            int "Protocol UART TX GPIO (-1 = the UART's default pin)"
+            int "Link UART TX GPIO (-1 = the UART's default pin)"
             range -1 33
-            default 5
+            default -1
         config SC_LINK_RX_GPIO
-            int "Protocol UART RX GPIO (-1 = the UART's default pin)"
+            int "Link UART RX GPIO (-1 = the UART's default pin)"
             range -1 39
-            default 13
-        config SC_LINK_BAUD
-            int "Protocol baud rate"
+            default -1
+        config SC_LINK_ACL_BAUD
+            int "Baud rate in the Eshed dialect"
+            default 9600
+            help
+                What the operator opens the port at (reference_only/operator erv.cpp: B9600).
+        config SC_LINK_PROTOBUF_BAUD
+            int "Baud rate for protobuf"
             default 921600
+        config SC_ACL_SIGN_MASK
+            hex "Eshed dialect: axes whose virtual counts run against the calibrated positive (bit per joint)"
+            default 0x0
+            help
+                The dialect reports and takes virtual ER-V counts (the operator's degree
+                factors are the ER-V's). Bit i set flips the sign for joint i, so the Pi
+                sees the same direction on this robot as on the ER-V. The scale comes from
+                the ER-V factors in scorbot_core/acl.c; the robot's own counts per radian
+                are the NVS calibration.
         config SC_WATCHDOG_MS
             int "Default command watchdog (ms)"
             default 200
     endmenu
+
+    config SC_JOINT_COUNT
+        int "Joints driven (5 = the arm, 6 = plus the slide channel)"
+        range 5 6
+        default 5
+        help
+            The rev 0.3 board carries a sixth channel for the ER-4pc's slide base (driver
+            socket U10, terminal J8, second expander U11 at 0x21, CS6 on the second ADC,
+            encoder on IO5/IO13, PWM on IO2). The core and the Eshed dialect (axis 7)
+            handle six joints; the device glue for the sixth (motor, limit_switch and
+            current components, the second expander) is the rev 0.3 follow-through and
+            is not written yet, so 6 does not build (see main/esp_driver.c).
 
     menu "Motor PWM (LEDC)"
         config SC_PWM_FREQ_HZ
@@ -49,6 +89,10 @@ menu "Talos ESP Driver Configuration"
         config SC_PWM5_GPIO
             int "PWM 5 GPIO"
             default 19
+        config SC_PWM6_GPIO
+            int "PWM 6 GPIO (the slide; rev 0.3: IO2, the DevKit's LED pin)"
+            depends on SC_JOINT_COUNT = 6
+            default 2
         config SC_SLP_GPIO
             int "Driver SLP (sleep) GPIO"
             default 15
@@ -102,6 +146,14 @@ menu "Talos ESP Driver Configuration"
         config SC_ENC5_P1_GPIO
             int "Encoder 5 P1"
             default 14
+        config SC_ENC6_P0_GPIO
+            int "Encoder 6 P0 (the slide; rev 0.3: IO5)"
+            depends on SC_JOINT_COUNT = 6
+            default 5
+        config SC_ENC6_P1_GPIO
+            int "Encoder 6 P1 (the slide; rev 0.3: IO13)"
+            depends on SC_JOINT_COUNT = 6
+            default 13
     endmenu
 
     menu "I2C: expander and ADCs"
@@ -123,6 +175,10 @@ menu "Talos ESP Driver Configuration"
         config SC_EXPANDER_INT_GPIO
             int "MCP23017 INTA GPIO"
             default 23
+        config SC_EXPANDER2_ADDRESS
+            hex "Second MCP23017 address (the slide channel: DIR6, FLT6, SW6)"
+            depends on SC_JOINT_COUNT = 6
+            default 0x21
         config SC_SWITCH_ACTIVE_LOW
             bool "Limit switch pressed reads low"
             default y
@@ -154,9 +210,5 @@ menu "Talos ESP Driver Configuration"
             int "Motor rail present above (0.1 V units)"
             default 90
     endmenu
-
-    config SC_LED_GPIO
-        int "Status LED GPIO"
-        default 2
 
 endmenu

@@ -2,7 +2,8 @@
 # controller core, tested against the simulator's behaviour spec with plain gcc.
 #
 #   make -C test/host            build and run every test
-#   make -C test/host core_sim   the core behind a pty for scorbot_protocol_cli
+#   make -C test/host core_sim   the core behind a pty for scorbot_protocol_cli or the operator (ACL)
+#   make -C test/host e2e OPERATOR=/tmp/opbuild/bin/erv   the real operator against core_sim
 #
 # No ESP-IDF needed; nothing here touches hardware.
 CC ?= gcc
@@ -30,12 +31,28 @@ $(BUILD)/test_proto: test_proto.c minitest.h $(PROTO_SRC) | $(BUILD)
 $(BUILD)/test_core: test_core.c plant.c plant.h minitest.h $(CORE_SRC) $(PROTO_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) $(DEFS) -o $@ test_core.c plant.c $(CORE_SRC) $(PROTO_SRC) -lm
 
+$(BUILD)/test_acl: test_acl.c plant.c plant.h minitest.h $(CORE_SRC) $(PROTO_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(INC) $(DEFS) -o $@ test_acl.c plant.c $(CORE_SRC) $(PROTO_SRC) -lm
+
 $(BUILD)/core_sim: core_sim.c plant.c plant.h $(CORE_SRC) $(PROTO_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) $(DEFS) -o $@ core_sim.c plant.c $(CORE_SRC) $(PROTO_SRC) -lm -lutil
 
-test: $(BUILD)/test_proto $(BUILD)/test_core
+test: $(BUILD)/test_proto $(BUILD)/test_core $(BUILD)/test_acl
 	./$(BUILD)/test_proto
 	./$(BUILD)/test_core
+	./$(BUILD)/test_acl
+
+test_acl: $(BUILD)/test_acl
+	./$(BUILD)/test_acl
+
+# End to end: the real operator (built out of tree, see e2e_operator.py) drives the
+# core's Eshed-dialect front-end behind core_sim's pty while the script plays commander.
+OPERATOR ?= /tmp/opbuild/bin/erv
+$(BUILD)/ptyshim.so: ptyshim.c | $(BUILD)
+	$(CC) -shared -fPIC -O1 -o $@ ptyshim.c -ldl
+
+e2e: $(BUILD)/core_sim $(BUILD)/ptyshim.so
+	python3 e2e_operator.py --operator $(OPERATOR)
 
 test_proto: $(BUILD)/test_proto
 	./$(BUILD)/test_proto
@@ -45,4 +62,4 @@ core_sim: $(BUILD)/core_sim
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test test_proto core_sim clean
+.PHONY: all test test_proto test_acl core_sim e2e clean
