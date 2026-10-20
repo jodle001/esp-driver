@@ -18,3 +18,7 @@ CONFIG_GPIO_CTRL_FUNC_IN_IRAM=y
 
 # nanopb: static messages only.
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# The second-stage bootloader shares UART0 with the Pi link; CONFIG_ESP_CONSOLE_NONE already nulls its
+# output channels, this keeps it from formatting the lines at all (the ROM log is silenced by IO15 low, R36).
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
