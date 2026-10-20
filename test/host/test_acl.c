@@ -463,6 +463,27 @@ static void test_the_slide_is_axis_7(void)
     MT_TRUE(seen_since(&h, m, "ACL - unrecognized request"));
 }
 
+static void test_the_gripper_is_axis_6_with_seven_channels(void)
+{
+    /* Rev 0.4: seven channels in the Eshed numbering, the gripper 6 and the rail 7. */
+    h_t h;
+    h_init(&h, 7);
+    start_like_the_operator(&h);
+    MT_EQ(sc_acl_joint_for_axis(&h.acl, 6), 5);
+    MT_EQ(sc_acl_joint_for_axis(&h.acl, 7), 6);
+    size_t m = mark(&h);
+    feed(&h, "LISTPV POSITION\r");
+    MT_TRUE(seen_since(&h, m, " 6:"));
+    MT_TRUE(seen_since(&h, m, " 7:"));
+    long v[5];
+    MT_TRUE(last_position(&h, m, v)); /* the operator's five-pair parse still works */
+    const long before = sc_acl_virtual_counts(&h.acl, 6);
+    feed(&h, "SHIFT DELTA BY 7 150\r");
+    feed(&h, "MOVE DELTA\r");
+    run(&h, 4.0);
+    MT_NEAR(sc_acl_virtual_counts(&h.acl, 6), before + 150, 3); /* axis 7 moved the last channel, the rail */
+}
+
 static void test_virtual_units_follow_the_configuration(void)
 {
     h_t h;
@@ -556,6 +577,7 @@ int main(void)
     MT_RUN(test_home_fault_ends_the_wait);
     MT_RUN(test_unknown_command_and_ctrl_c);
     MT_RUN(test_the_slide_is_axis_7);
+    MT_RUN(test_the_gripper_is_axis_6_with_seven_channels);
     MT_RUN(test_virtual_units_follow_the_configuration);
     MT_RUN(test_output_is_text_only);
     MT_RUN(test_link_mode_sniffer);

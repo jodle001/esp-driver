@@ -1,7 +1,9 @@
 # esp-driver
 
-Firmware for the custom ESP32 controller that drives a Scorbot (Bluey first, Bingo
-next). Over the DevKit's USB it speaks the Eshed box's own serial dialect, the ACL
+Firmware for the custom controller that drives a Scorbot (Bluey first, Bingo next): an
+ESP32-S3-DevKitC-1 on the rev 0.4 board with seven channels, the arm, the gripper and the
+rail, each encoder counted by its own LS7366R chip on SPI (design doc section 8, decided
+Oct 20 2026). Over the DevKit's USB-UART bridge it speaks the Eshed box's own serial dialect, the ACL
 subset the operator sends (`components/scorbot_core/acl.h`, design doc section 7), so a
 Raspberry Pi running the unchanged operator cannot tell this board from an Eshed
 controller (decided Oct 16 2026). The protobuf protocol of the ROS 2 stack
@@ -17,13 +19,14 @@ is not built any more; its components (`driver_socket`, `driver_wifi`, `motorhat
 | `components/scorbot_core` | the controller: state machine, homing, watchdog, soft limits, faults, calibration, the per-joint control law and every message; `acl.c`, the Eshed dialect on top of it; `link_mode.c`, which protocol the first bytes are. Portable C, no ESP-IDF calls | device and host |
 | `components/scorbot_proto` | the wire contract: nanopb runtime and generated messages copied from `scorbot_ros2/scorbot_protocol` (`scripts/sync_protocol.sh --check` keeps them identical), COBS + CRC-16 framing in C | device and host |
 | `components/link_uart` | the link UART (UART0, the DevKit's USB): RX task into a stream buffer the control loop reads, non-blocking TX, framing-error count, baud switch | device |
-| `components/expander` | MCP23017: DIR and SLP out, FLT and limit switches in, INTA on change | device |
-| `components/motor` | five LEDC PWM channels + DIR/SLP through the expander for the Pololu G2 18v17 modules | device |
-| `components/encoder` | quadrature on the pulse counters (unchanged from the previous firmware) | device |
-| `components/limit_switch` | INTA interrupt latches all five counts, then the task reads which switch moved | device |
-| `components/current` | two ADS1015 boards: five motor currents and the motor-rail voltage (e-stop detection) | device |
+| `components/expander` | two MCP23017: the DIR chip (DIR1-7 out, the MOTORS ON chain sense in) and the sense chip (FLT1-7 and SW1-7 in), one shared INT line | device |
+| `components/motor` | up to seven LEDC PWM channels + DIR through the DIR chip, the shared SLP line, for the Pololu G2 18v17 modules | device |
+| `components/encoder_ls7366r` | the seven LS7366R quadrature counters on SPI: setup with read-back (self-test), the per-tick read of all counts, the filter clock from LEDC | device |
+| `components/encoder` | the rev 0.3 pulse-counter encoder, kept for reference, not built | reference |
+| `components/limit_switch` | the INT line wakes a task that reads every counter (the latch), then which switch, fault line or chain sense moved | device |
+| `components/current` | two ADS1015 boards: seven motor currents and the motor-rail voltage (e-stop detection) | device |
 | `components/nvs_store` | boot count, robot type and per-joint calibration in NVS | device |
-| `main/` | task wiring, the link mode, and the Kconfig pin map of the rev 0.3 board (the expander bit map is still rev 0.2's) | device |
+| `main/` | task wiring, the link mode, and the Kconfig pin map of the rev 0.4 board | device |
 | `test/host/` | host build: plant model, the simulator's behaviour tests run against the real core, the dialect's tests, `core_sim` (the core behind a pty) and the end-to-end run with the real operator | host |
 
 ## Host build (no ESP-IDF, no hardware)
@@ -63,33 +66,35 @@ accepted, a jog ended by PolarPanStop, and a Home. `ptyshim.c` is preloaded into
 operator so its DTR/RTS ioctls succeed on a pty. The operator's own log (`/tmp/talos-e2e/op.log`,
 `ACL TX` / `ACL RX` lines) is the byte-level record of the exchange.
 
-## Device build (ESP-IDF v5.5, target esp32)
+## Device build (ESP-IDF v5.5, target esp32s3)
 
 ```bash
 cd esp-driver
-idf.py set-target esp32
-idf.py menuconfig          # "Talos ESP Driver Configuration": link mode, pins, the rev 0.3 defaults
-idf.py build flash         # the same USB is the link: unplug the Pi, plug the laptop
+idf.py set-target esp32s3
+idf.py menuconfig          # "Talos ESP Driver Configuration": link mode, joints (7), pins, the rev 0.4 defaults
+idf.py build flash         # flashing goes through the "UART" USB-C socket, the same one the Pi uses
+idf.py monitor -p /dev/ttyACM0   # the console is the other socket, "USB" (USB-Serial-JTAG)
 ```
 
-The link is UART0, the DevKit's USB, and there is no console (the Eshed box has none,
-and UART1's pins carry the slide encoder on the rev 0.3 board). "Link to the Pi" in
+The link is UART0, the DevKit's USB-UART bridge (the first USB-C socket); the console,
+logs and JTAG are the S3's USB-Serial-JTAG peripheral on the second socket, so no UART
+pin is spent and nothing but the protocol reaches the Pi after the ROM's own boot line
+(silenced for good by burning the `UART_PRINT_CONTROL` eFuse to 3 with `espefuse.py`, a
+once-per-DevKit commissioning step). "Link to the Pi" in
 menuconfig picks the protocol: the Eshed dialect at 9600 (default: the operator), the
 protobuf framing at 921600 (the ROS 2 hardware interface), or auto, which starts at 9600
 and switches when the first bytes are not text. The dialect's per-joint sign is
 `SC_ACL_SIGN_MASK`; its scale is the ER-V's count factors in `scorbot_core/acl.c`, applied
 to the NVS calibration, which is pushed once over the protobuf link
-(`scorbot_protocol_cli`, in protobuf or auto mode) before the operator is used. A bench
-build that wants ESP_LOG on the USB sets the console back to UART0 in sdkconfig and moves
-the link to another UART. The status pixels (rev 0.3) are not driven yet; the old status
-LED went with its pin.
+(`scorbot_protocol_cli`, in protobuf or auto mode) before the operator is used. The
+status pixels (`SC_PIXEL_GPIO`) are not driven yet.
 
 Bench acceptance, in the order of the design doc
 (`project_documentation/technical/ros2/esp_controller_design.md` section 4.4):
 
 1. DevKit alone, nothing on the board (link on the DevKit's USB, `SC_LINK_UART_NUM=0`): `scorbot_protocol_cli --port /dev/ttyUSB0 ping`,
-   `info`, `monitor 3`. Without the board the self-test finds no expander or ADC and
-   boots into FAULT (`fault=driver`); the link and the stream still work.
+   `info`, `monitor 3`. Without the board the self-test finds no expander, counter or ADC
+   and boots into FAULT (`fault=driver`); the link and the stream still work.
 2. Full board, no robot: the same, now UNHOMED; `enable --allow-unhomed` then silence
    gives the watchdog fault after 200 ms.
 3. One motor, encoder and switch: velocity and position mode, homing from both sides,
@@ -97,10 +102,12 @@ Bench acceptance, in the order of the design doc
 4. The arm: `robot.launch.py mock:=false`, home, enable, `demo_motion`.
 
 Nothing here has been compiled against ESP-IDF yet (the host build is what has run);
-the first `idf.py build` on a machine with the toolchain is the next step. The slide
-channel (`SC_JOINT_COUNT=6`) is provided for in Kconfig and handled by the core and the
-dialect, but its device glue (the second expander, PWM6, encoder 6, CS6 in the motor,
-limit_switch and current components) is not written: the build refuses it until then.
+the first `idf.py build` on a machine with the toolchain is the next step. The LS7366R
+register map in `encoder_ls7366r.h` is from the part's common usage, not read off the
+datasheet in this sandbox: the init reads MDR0 back and fails loudly if a chip disagrees.
+The limit-switch latch is the software one (counters read about 40 us after the
+interrupt); the chips' INDEX inputs are wired to the switch lines on the board so the
+hardware latch can take over once its polarity is seen on the bench.
 
 ## Sync with the ROS side
 

@@ -19,6 +19,7 @@
 #define REG_OLATB 0x15
 
 #define IOCON_MIRROR 0x40 /* INTA and INTB are internally connected */
+#define IOCON_ODR 0x04    /* INT pin open-drain: the two chips share one line */
 
 static esp_err_t wr(expander_t *x, uint8_t reg, uint8_t value)
 {
@@ -31,7 +32,7 @@ static esp_err_t rd(expander_t *x, uint8_t reg, uint8_t *out, size_t n)
     return i2c_master_transmit_receive(x->dev, &reg, 1, out, n, TIMEOUT_MS);
 }
 
-esp_err_t expander_init(expander_t *x, i2c_master_bus_handle_t bus, uint8_t address, uint32_t speed_hz)
+esp_err_t expander_init(expander_t *x, i2c_master_bus_handle_t bus, uint8_t address, uint32_t speed_hz, expander_role_t role)
 {
     const i2c_device_config_t cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -42,20 +43,30 @@ esp_err_t expander_init(expander_t *x, i2c_master_bus_handle_t bus, uint8_t addr
     if (err != ESP_OK) {
         return err;
     }
+    x->role = role;
     x->olat_a = 0;
     /* Outputs low before they become outputs: DIR don't-care (the drivers are asleep on
-       the ESP32's SLP line), the unused GPB7 driven low. */
+       the SLP line), the output-only GPA7/GPB7 driven low on both chips. */
     if ((err = wr(x, REG_OLATA, 0x00)) != ESP_OK) return err;
     if ((err = wr(x, REG_OLATB, 0x00)) != ESP_OK) return err;
-    if ((err = wr(x, REG_IODIRA, (uint8_t)~EXPANDER_A_OUTPUTS)) != ESP_OK) return err; /* GPA0-3, GPA7 out; GPA4-6 in */
-    if ((err = wr(x, REG_IODIRB, 0x7F)) != ESP_OK) return err;  /* GPB0-6 in; GPB7 out (never an input) */
-    if ((err = wr(x, REG_GPPUA, EXPANDER_A_FLT1 | EXPANDER_A_FLT2)) != ESP_OK) return err; /* FLT1-2 pull-ups */
-    if ((err = wr(x, REG_GPPUB, EXPANDER_B_FLT_MASK)) != ESP_OK) return err; /* FLT3-5 pull-ups; switches have board pull-ups */
-    if ((err = wr(x, REG_IOCON, IOCON_MIRROR)) != ESP_OK) return err;
-    if ((err = wr(x, REG_INTCONA, 0x00)) != ESP_OK) return err; /* compare against previous value */
+    if (role == EXPANDER_ROLE_DIR) {
+        if ((err = wr(x, REG_IODIRA, 0x00)) != ESP_OK) return err;  /* DIR1-7 out, GPA7 out (low) */
+        if ((err = wr(x, REG_IODIRB, 0x7F)) != ESP_OK) return err;  /* GPB0 ESTOP_SENSE and spares in, GPB7 out */
+        if ((err = wr(x, REG_GPPUA, 0x00)) != ESP_OK) return err;
+        if ((err = wr(x, REG_GPPUB, 0x7E)) != ESP_OK) return err;   /* spares pulled up; ESTOP_SENSE has its divider */
+        if ((err = wr(x, REG_GPINTENA, 0x00)) != ESP_OK) return err;
+        if ((err = wr(x, REG_GPINTENB, EXPANDER_DIR_ESTOP_SENSE)) != ESP_OK) return err;
+    } else {
+        if ((err = wr(x, REG_IODIRA, 0x7F)) != ESP_OK) return err;  /* FLT1-7 in, GPA7 out */
+        if ((err = wr(x, REG_IODIRB, 0x7F)) != ESP_OK) return err;  /* SW1-7 in, GPB7 out */
+        if ((err = wr(x, REG_GPPUA, EXPANDER_CHANNEL_MASK)) != ESP_OK) return err; /* FLT: open-drain outputs on the modules */
+        if ((err = wr(x, REG_GPPUB, 0x00)) != ESP_OK) return err;  /* the switches have the board's pull-ups */
+        if ((err = wr(x, REG_GPINTENA, EXPANDER_CHANNEL_MASK)) != ESP_OK) return err;
+        if ((err = wr(x, REG_GPINTENB, EXPANDER_CHANNEL_MASK)) != ESP_OK) return err;
+    }
+    if ((err = wr(x, REG_IOCON, IOCON_MIRROR | IOCON_ODR)) != ESP_OK) return err;
+    if ((err = wr(x, REG_INTCONA, 0x00)) != ESP_OK) return err; /* interrupt on change against the previous value */
     if ((err = wr(x, REG_INTCONB, 0x00)) != ESP_OK) return err;
-    if ((err = wr(x, REG_GPINTENA, EXPANDER_A_FLT1 | EXPANDER_A_FLT2 | EXPANDER_A_SW5)) != ESP_OK) return err;
-    if ((err = wr(x, REG_GPINTENB, 0x7F)) != ESP_OK) return err;
     uint8_t dummy[2];
     return rd(x, REG_INTCAPA, dummy, 2); /* clear any pending interrupt */
 }

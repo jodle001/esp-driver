@@ -99,8 +99,11 @@ int sc_acl_joint_for_axis(const sc_acl_t *a, int axis)
     if (axis >= 1 && axis <= 5 && axis <= a->core->joint_count) {
         return axis - 1;
     }
+    if (axis == 6 && a->core->joint_count >= 7) {
+        return 5; /* the gripper, when the board carries all seven channels (rev 0.4) */
+    }
     if (axis == 7 && a->core->joint_count >= 6) {
-        return 5; /* the slide: the Eshed's peripheral axis */
+        return a->core->joint_count - 1; /* the slide: the Eshed's peripheral axis, always the last channel */
     }
     return -1;
 }
@@ -289,7 +292,8 @@ static void cmd_con(sc_acl_t *a)
 static void cmd_listpv(sc_acl_t *a)
 {
     /* The operator parses " %*d:%ld" five times from the start of a line, so the pairs
-       lead the line; a sixth pair for the slide (axis 7) follows and is ignored by it. */
+       lead the line; the gripper (axis 6, when fitted) and the slide (axis 7) follow and are
+       ignored by it. */
     char text[128];
     int n = 0;
     const uint8_t joints = a->core->joint_count < 5 ? a->core->joint_count : 5;
@@ -297,8 +301,11 @@ static void cmd_listpv(sc_acl_t *a)
         n += snprintf(text + n, sizeof(text) - (size_t)n, "%s%u:%ld", i ? " " : "", (unsigned)(i + 1),
                       (long)sc_acl_virtual_counts(a, i));
     }
+    if (a->core->joint_count >= 7) {
+        n += snprintf(text + n, sizeof(text) - (size_t)n, " 6:%ld", (long)sc_acl_virtual_counts(a, 5)); /* the gripper */
+    }
     if (a->core->joint_count >= 6) {
-        n += snprintf(text + n, sizeof(text) - (size_t)n, " 7:%ld", (long)sc_acl_virtual_counts(a, 5));
+        n += snprintf(text + n, sizeof(text) - (size_t)n, " 7:%ld", (long)sc_acl_virtual_counts(a, (uint8_t)(a->core->joint_count - 1)));
     }
     line_out(a, text);
 }

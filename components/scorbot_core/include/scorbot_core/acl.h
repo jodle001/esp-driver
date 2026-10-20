@@ -93,7 +93,7 @@ size_t sc_acl_pending(const sc_acl_t *a);
 
 /// The joint's position in virtual counts, as LISTPV reports it.
 int32_t sc_acl_virtual_counts(const sc_acl_t *a, uint8_t joint);
-/// Core joint index for an ACL axis number (1-5, 7 = the slide), or -1.
+/// Core joint index for an ACL axis number (1-5 the arm, 6 the gripper when seven channels are fitted, 7 = the slide, always the last channel), or -1.
 int sc_acl_joint_for_axis(const sc_acl_t *a, int axis);
 
 #ifdef __cplusplus

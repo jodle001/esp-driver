@@ -1,10 +1,13 @@
 # Scorbot controller firmware defaults (idf.py reads these into a fresh sdkconfig).
-CONFIG_IDF_TARGET="esp32"
+# Rev 0.4 board (Oct 20 2026): ESP32-S3-DevKitC-1, seven channels, LS7366R counters on SPI.
+CONFIG_IDF_TARGET="esp32s3"
 
-# The link to the Pi owns UART0 (the DevKit's USB) and there is no console: the Eshed box has none,
-# and UART1's pins carry the slide encoder on the rev 0.3 board (Oct 16 2026). For a bench build with
-# ESP_LOG on the USB, set the console back to UART0 and SC_LINK_UART_NUM to 1 with pins of your own.
-CONFIG_ESP_CONSOLE_NONE=y
+# The link to the Pi owns UART0 (the DevKit's USB-UART bridge, the first USB-C socket). The console
+# is the S3's USB-Serial-JTAG peripheral on the second USB-C socket: logs and the bootloader's
+# messages go there and never onto the Pi link. (The ROM's own boot log still goes to UART0 unless
+# the UART_PRINT_CONTROL eFuse is burned to 3; see the design doc, section 8.1.)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # 1 ms tick: the current task paces ADC conversions with vTaskDelay(1).
 CONFIG_FREERTOS_HZ=1000
@@ -12,13 +15,5 @@ CONFIG_FREERTOS_HZ=1000
 # The 1 kHz control timer fires from the ISR dispatch path.
 CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD=y
 
-# Pulse counter reads from the switch-edge interrupt must not touch flash cache.
-CONFIG_PCNT_CTRL_FUNC_IN_IRAM=y
-CONFIG_GPIO_CTRL_FUNC_IN_IRAM=y
-
 # nanopb: static messages only.
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
-
-# The second-stage bootloader shares UART0 with the Pi link; CONFIG_ESP_CONSOLE_NONE already nulls its
-# output channels, this keeps it from formatting the lines at all (the ROM log is silenced by IO15 low, R36).
-CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y

@@ -1,23 +1,25 @@
-// Scorbot ESP32 controller firmware: wires the portable core (components/scorbot_core)
-// to the rev 0.3 board. Pins, addresses and scales come from Kconfig ("Talos ESP Driver
+// Scorbot controller firmware: wires the portable core (components/scorbot_core) to the
+// rev 0.4 board (ESP32-S3-DevKitC-1, seven channels, LS7366R counters; design doc
+// section 8). Pins, addresses and scales come from Kconfig ("Talos ESP Driver
 // Configuration"); nothing robot-specific is compiled in, the calibration lives in NVS
 // (pushed once over the protobuf link by scorbot_protocol_cli).
 //
-// The link to the Pi is UART0 (the DevKit's USB). It speaks the Eshed box's dialect
-// (scorbot_core/acl.h, the operator unchanged) or the protobuf framing (the ROS 2
+// The link to the Pi is UART0 (the DevKit's USB-UART bridge). It speaks the Eshed box's
+// dialect (scorbot_core/acl.h, the operator unchanged) or the protobuf framing (the ROS 2
 // stack), chosen in Kconfig or, in auto mode, from the first bytes (scorbot_core/link_mode.h).
+// The console is the S3's USB-Serial-JTAG port, so nothing but the protocol is on the link.
 //
 // Tasks:
-//   control (1 kHz, core 1, from an esp_timer): read encoders, switches, currents;
+//   control (1 kHz, core 1, from an esp_timer): read counters (SPI), switches, currents;
 //           sc_core_tick; write PWM/DIR/SLP; move the link's bytes both ways
 //   link_rx (core 0): UART bytes -> stream buffer for the control task
-//   limit_switch (core 0): INTA -> which switch moved, with the encoder latch from the ISR
+//   limit_switch (core 0): INT -> read the counters (the latch), then which input moved
 //   current (core 0): ADS1015 round-robin
 #include <string.h>
 
 #include "current.h"
 #include "driver/gpio.h"
-#include "encoder.h"
+#include "encoder_ls7366r.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "expander.h"
@@ -37,13 +39,17 @@
 static const char *TAG = "scorbot";
 
 #define JOINTS CONFIG_SC_JOINT_COUNT
-#define FIRMWARE_VERSION "0.2.0"
+#define FIRMWARE_VERSION "0.3.0"
 
-#if JOINTS > 5
-#error "The slide channel (joint 6) is provided for on the rev 0.3 board, but its device glue (motor, limit_switch, current, the second expander at 0x21) is not written yet"
+/* Eshed numbering: 1-5 the arm, 6 the gripper, 7 the rail. The last channel configured is
+   always the rail (6 joints = the arm plus the rail, no gripper). */
+#if JOINTS == 7
+static const char *kJointNames[JOINTS] = {"base_joint", "shoulder_joint", "elbow_joint", "wrist_pitch_joint", "wrist_roll_joint", "gripper_joint", "slide_joint"};
+#elif JOINTS == 6
+static const char *kJointNames[JOINTS] = {"base_joint", "shoulder_joint", "elbow_joint", "wrist_pitch_joint", "wrist_roll_joint", "slide_joint"};
+#else
+static const char *kJointNames[JOINTS] = {"base_joint", "shoulder_joint", "elbow_joint", "wrist_pitch_joint", "wrist_roll_joint"};
 #endif
-
-static const char *kJointNames[6] = {"base_joint", "shoulder_joint", "elbow_joint", "wrist_pitch_joint", "wrist_roll_joint", "slide_joint"};
 
 static sc_core_t s_core;
 static sc_core_config_t s_cfg;
@@ -51,8 +57,7 @@ static sc_acl_t s_acl;
 static sc_link_mode_t s_mode;
 static sc_link_sniffer_t s_sniffer;
 static sc_stream_decoder_t s_decoder;
-static encoder_handle_t s_encoders[JOINTS];
-static expander_t s_expander;
+static expander_t s_expander_dir, s_expander_sense;
 static motor_t s_motor;
 static TaskHandle_t s_control_task;
 static int64_t s_last_tick_us;
@@ -139,7 +144,7 @@ static void control_task(void *arg)
     limit_switch_snapshot_t sw;
     current_snapshot_t cur;
     scorbot_v1_Envelope e;
-    uint32_t bus_error_ticks = 0;
+    uint32_t bus_error_ticks = 0, spi_error_ticks = 0;
 
     s_last_tick_us = esp_timer_get_time();
     for (;;) {
@@ -162,10 +167,16 @@ static void control_task(void *arg)
         memset(&in, 0, sizeof(in));
         limit_switch_collect(&sw);
         current_collect(&cur);
+        int32_t counts[JOINTS] = {0};
+        if (ls7366r_read_all(counts) != ESP_OK) {
+            if (++spi_error_ticks == 50) { /* 50 ms without counts: no position, no control */
+                sc_core_raise_fault(&s_core, scorbot_v1_FaultCode_FAULT_DRIVER, -1, false);
+            }
+        } else {
+            spi_error_ticks = 0;
+        }
         for (int i = 0; i < JOINTS; ++i) {
-            int c = 0;
-            encoder_get_raw_count(&s_encoders[i], &c);
-            in.joint[i].counts = c;
+            in.joint[i].counts = counts[i];
             in.joint[i].limit_switch = sw.joint[i].pressed;
             in.joint[i].switch_edge = sw.joint[i].edge;
             in.joint[i].latched_counts = sw.joint[i].latched_count;
@@ -264,45 +275,51 @@ void app_main(void)
                                      .tx_gpio = CONFIG_SC_LINK_TX_GPIO, .rx_gpio = CONFIG_SC_LINK_RX_GPIO};
     ESP_ERROR_CHECK(link_uart_init(&link));
 
-    /* I2C bus: expander, two ADCs. */
+    /* I2C bus: the two expanders, two ADCs. */
     i2c_bus_t bus;
     const i2c_bus_config_t bus_cfg = {.port = I2C_NUM_0, .sda_io_num = CONFIG_SC_I2C_SDA_GPIO, .scl_io_num = CONFIG_SC_I2C_SCL_GPIO};
     ESP_ERROR_CHECK(i2c_bus_init(&bus, &bus_cfg));
 
     bool hardware_ok = true;
-    esp_err_t err = expander_init(&s_expander, bus.handle, CONFIG_SC_EXPANDER_ADDRESS, CONFIG_SC_I2C_SPEED_HZ);
+    esp_err_t err = expander_init(&s_expander_dir, bus.handle, CONFIG_SC_EXPANDER_DIR_ADDRESS, CONFIG_SC_I2C_SPEED_HZ, EXPANDER_ROLE_DIR);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "MCP23017: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "MCP23017 (DIR) at 0x%02x: %s", CONFIG_SC_EXPANDER_DIR_ADDRESS, esp_err_to_name(err));
+        hardware_ok = false;
+    }
+    err = expander_init(&s_expander_sense, bus.handle, CONFIG_SC_EXPANDER_SENSE_ADDRESS, CONFIG_SC_I2C_SPEED_HZ, EXPANDER_ROLE_SENSE);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "MCP23017 (sense) at 0x%02x: %s", CONFIG_SC_EXPANDER_SENSE_ADDRESS, esp_err_to_name(err));
         hardware_ok = false;
     }
 
-    /* Encoders on the pulse counters. */
-    const int enc_pins[JOINTS][2] = {
-        {CONFIG_SC_ENC1_P0_GPIO, CONFIG_SC_ENC1_P1_GPIO}, {CONFIG_SC_ENC2_P0_GPIO, CONFIG_SC_ENC2_P1_GPIO},
-        {CONFIG_SC_ENC3_P0_GPIO, CONFIG_SC_ENC3_P1_GPIO}, {CONFIG_SC_ENC4_P0_GPIO, CONFIG_SC_ENC4_P1_GPIO},
-        {CONFIG_SC_ENC5_P0_GPIO, CONFIG_SC_ENC5_P1_GPIO},
+    /* Encoders: one LS7366R counter per channel on SPI, the chips verified as they are set up. */
+    const ls7366r_config_t ec = {
+        .sclk_gpio = CONFIG_SC_SPI_SCLK_GPIO,
+        .mosi_gpio = CONFIG_SC_SPI_MOSI_GPIO,
+        .miso_gpio = CONFIG_SC_SPI_MISO_GPIO,
+        .cs_gpio = {CONFIG_SC_CNT1_CS_GPIO, CONFIG_SC_CNT2_CS_GPIO, CONFIG_SC_CNT3_CS_GPIO, CONFIG_SC_CNT4_CS_GPIO,
+                    CONFIG_SC_CNT5_CS_GPIO, CONFIG_SC_CNT6_CS_GPIO, CONFIG_SC_CNT7_CS_GPIO},
+        .count = JOINTS,
+        .clk_gpio = CONFIG_SC_CNT_CLK_GPIO,
+        .clk_hz = CONFIG_SC_CNT_CLK_HZ,
+        .spi_hz = CONFIG_SC_SPI_HZ,
+        .ledc_channel = 7, /* the motors use 0..6 */
     };
-    for (int i = 0; i < JOINTS; ++i) {
-        encoder_config_t ec = {
-            .P0_pin = enc_pins[i][0],
-            .P1_pin = enc_pins[i][1],
-            .glitch_filter_ns = CONFIG_SC_ENC_GLITCH_NS,
-            .resolution = 20,
-            .gear_ratio = 1.0f,
-            .limb_default = 0.0f,
-            .invert_angle = 0, /* encoder_invert is applied in the core from the calibration */
-        };
-        ESP_ERROR_CHECK(encoder_init(&s_encoders[i], &ec));
-        ESP_ERROR_CHECK(encoder_start(&s_encoders[i]));
+    err = ls7366r_init(&ec);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "LS7366R counters: %s", esp_err_to_name(err));
+        hardware_ok = false;
     }
 
-    /* Motors: LEDC PWM, DIR through the expander, the shared SLP on its own GPIO (low
+    /* Motors: LEDC PWM, DIR through the DIR expander, the shared SLP on its own GPIO (low
        until the core says so). */
     motor_config_t mc = {
-        .pwm_gpio = {CONFIG_SC_PWM1_GPIO, CONFIG_SC_PWM2_GPIO, CONFIG_SC_PWM3_GPIO, CONFIG_SC_PWM4_GPIO, CONFIG_SC_PWM5_GPIO},
+        .count = JOINTS,
+        .pwm_gpio = {CONFIG_SC_PWM1_GPIO, CONFIG_SC_PWM2_GPIO, CONFIG_SC_PWM3_GPIO, CONFIG_SC_PWM4_GPIO, CONFIG_SC_PWM5_GPIO,
+                     CONFIG_SC_PWM6_GPIO, CONFIG_SC_PWM7_GPIO},
         .pwm_freq_hz = CONFIG_SC_PWM_FREQ_HZ,
         .slp_gpio = CONFIG_SC_SLP_GPIO,
-        .expander = &s_expander,
+        .dir_expander = &s_expander_dir,
     };
     err = motor_init(&s_motor, &mc);
     if (err != ESP_OK) {
@@ -310,20 +327,20 @@ void app_main(void)
         hardware_ok = false;
     }
 
-    /* Switches and driver faults through the expander, with the encoder latch. */
-    limit_switch_config_t lc = {
+    /* Switches, driver faults and the MOTORS ON chain sense through the expanders, with
+       the count latch read from the counters. */
+    const limit_switch_config_t lc = {
         .int_gpio = CONFIG_SC_EXPANDER_INT_GPIO,
 #ifdef CONFIG_SC_SWITCH_ACTIVE_LOW
         .active_low = true,
 #else
         .active_low = false,
 #endif
-        .expander = &s_expander,
+        .sense = &s_expander_sense,
+        .dir = &s_expander_dir,
+        .count = JOINTS,
         .debounce_us = 2000,
     };
-    for (int i = 0; i < JOINTS; ++i) {
-        lc.encoders[i] = &s_encoders[i];
-    }
     err = limit_switch_init(&lc);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "limit_switch: %s", esp_err_to_name(err));
@@ -333,6 +350,7 @@ void app_main(void)
     /* Currents and the motor rail. */
     const current_config_t cc = {
         .bus = bus.handle,
+        .count = JOINTS,
         .addr_a = CONFIG_SC_ADC_A_ADDRESS,
         .addr_b = CONFIG_SC_ADC_B_ADDRESS,
         .speed_hz = CONFIG_SC_I2C_SPEED_HZ,

@@ -1,13 +1,14 @@
-// MCP23017 16-bit I/O expander on the I2C bus (rev 0.2 board, address 0x20):
-//   GPA0-3  DIR1-4 (out)     GPA7 DIR5 (out)
-//   GPA4-5  FLT1-2 (in, pull-up, active low)    GPB0-2 FLT3-5 (in)
-//   GPA6    SW5 (in)         GPB3-6 SW1-4 (in; the board has 10 k pull-ups, the switch pulls to ground)
-//   GPB7    unused, driven low
-// GPA7 and GPB7 are output-only on this part (Microchip datasheet rev D: an input that
-// changes during a read corrupts SDA), which is why DIR5 sits on GPA7 and GPB7 is not used.
-// The shared driver SLP line is an ESP32 GPIO, not on the expander (see motor.h).
-// INTA is configured to fire on any change of the FLT and SW inputs, both ports
-// mirrored onto it; the limit_switch component owns that interrupt.
+// Two MCP23017 16-bit I/O expanders on the I2C bus (rev 0.4 board, Oct 20 2026):
+//   U7, 0x20, the DIR chip:   GPA0-6 DIR1-7 (out), GPA7 driven low;
+//                             GPB0 ESTOP_SENSE (in: the MOTORS ON chain's 12 V through the
+//                             30k/10k divider, high = chain closed), GPB1-6 spare, GPB7 low.
+//   U11, 0x21, the sense chip: GPA0-6 FLT1-7 (in, pull-up, active low), GPA7 driven low;
+//                             GPB0-6 SW1-7 (in; the board's 10 k pull-ups, a switch pulls
+//                             to ground), GPB7 driven low.
+// GPA7 and GPB7 are never inputs (Microchip datasheet rev D: an input that changes during
+// a read corrupts SDA). Both chips' INTA sit on one open-drain line with both ports
+// mirrored onto it; the limit_switch component owns that interrupt and clears both chips.
+// The rev 0.3 map (one chip plus three bits on a second) is in git history.
 #pragma once
 
 #include <stdbool.h>
@@ -20,36 +21,35 @@
 extern "C" {
 #endif
 
-/* Port A bits (outputs and inputs) */
-#define EXPANDER_A_FLT1 0x10u
-#define EXPANDER_A_FLT2 0x20u
-#define EXPANDER_A_SW5 0x40u
-#define EXPANDER_A_DIR5 0x80u
-#define EXPANDER_A_OUTPUTS 0x8Fu /* DIR1-4, DIR5 */
-/* Port B bits */
-#define EXPANDER_B_FLT_MASK 0x07u /* FLT3-5 on GPB0-2 */
-#define EXPANDER_B_SW_SHIFT 3     /* SW1-4 on GPB3-6 */
+#define EXPANDER_CHANNELS 7
+#define EXPANDER_CHANNEL_MASK 0x7Fu    /* GPA0-6 or GPB0-6 */
+#define EXPANDER_DIR_ESTOP_SENSE 0x01u /* GPB0 of the DIR chip */
 
-/// Port A bit that carries DIR for driver i (0-based): GPA0-3 for drivers 1-4, GPA7 for driver 5.
-static inline uint8_t expander_dir_bit(int i) { return i < 4 ? (uint8_t)(1u << i) : (uint8_t)EXPANDER_A_DIR5; }
-/// Level of limit switch i (0-based) from a port A / port B reading.
-static inline bool expander_switch_level(int i, uint8_t gpio_a, uint8_t gpio_b)
-{
-    return i < 4 ? ((gpio_b >> (EXPANDER_B_SW_SHIFT + i)) & 1u) != 0 : (gpio_a & EXPANDER_A_SW5) != 0;
-}
+typedef enum {
+    EXPANDER_ROLE_DIR,   /* port A outputs (DIR), GPB0 input (ESTOP_SENSE) */
+    EXPANDER_ROLE_SENSE, /* port A inputs (FLT, pull-ups), port B inputs (SW) */
+} expander_role_t;
 
 typedef struct {
     i2c_master_dev_handle_t dev;
+    expander_role_t role;
     uint8_t olat_a; /* shadow of the output latch */
 } expander_t;
 
-/// Configure directions, pull-ups and interrupt-on-change; outputs start low (drivers asleep).
-esp_err_t expander_init(expander_t *x, i2c_master_bus_handle_t bus, uint8_t address, uint32_t speed_hz);
-/// Set the DIR lines (bits 0..3 and 7) from one 8-bit value of port A.
+/// Direction bit of driver i (0-based) on the DIR chip's port A.
+static inline uint8_t expander_dir_bit(int i) { return (uint8_t)(1u << i); }
+/// FLT of driver i from the sense chip's port A (active low): true = faulted.
+static inline bool expander_fault(int i, uint8_t sense_a) { return ((sense_a >> i) & 1u) == 0; }
+/// Level of limit switch i from the sense chip's port B.
+static inline bool expander_switch_level(int i, uint8_t sense_b) { return ((sense_b >> i) & 1u) != 0; }
+
+/// Configure directions, pull-ups and interrupt-on-change for the role; outputs start low.
+esp_err_t expander_init(expander_t *x, i2c_master_bus_handle_t bus, uint8_t address, uint32_t speed_hz, expander_role_t role);
+/// Set port A's outputs (the DIR chip: bits 0-6 = DIR1-7) from one 8-bit value.
 esp_err_t expander_write_port_a(expander_t *x, uint8_t value);
 /// Read both ports: *a = GPIOA, *b = GPIOB.
 esp_err_t expander_read(expander_t *x, uint8_t *a, uint8_t *b);
-/// Read the interrupt flag and capture registers (clears the interrupt).
+/// Read the interrupt flag and capture registers (clears this chip's interrupt).
 esp_err_t expander_read_interrupt(expander_t *x, uint8_t *intf_a, uint8_t *intf_b, uint8_t *cap_a, uint8_t *cap_b);
 
 #ifdef __cplusplus

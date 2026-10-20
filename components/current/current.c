@@ -16,17 +16,18 @@ static const char *TAG = "current";
 #define PGA_256MV 0x5
 #define PGA_4096V 0x1
 #define DR_3300 0x6
+#define VSENSE_INPUT 3 /* A3 of the second board */
 
 static current_config_t s_cfg;
 static i2c_master_dev_handle_t s_dev_a, s_dev_b;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static current_snapshot_t s_state;
-static float s_duty[CURRENT_COUNT]; /* magnitude of the commanded duty, from the control task */
+static float s_duty[CURRENT_MAX]; /* magnitude of the commanded duty, from the control task */
 
 void current_set_duty(const float *duty)
 {
     portENTER_CRITICAL(&s_lock);
-    for (int i = 0; i < CURRENT_COUNT; ++i) {
+    for (int i = 0; i < s_cfg.count; ++i) {
         s_duty[i] = fabsf(duty[i]);
     }
     portEXIT_CRITICAL(&s_lock);
@@ -67,50 +68,66 @@ static esp_err_t read_raw(i2c_master_dev_handle_t dev, int16_t *out)
     return err;
 }
 
+/* The second board's inputs: CS5.. on A0-A2 (those that exist), VSENSE on A3. */
+static int b_inputs(uint8_t *inputs)
+{
+    int n = 0;
+    for (int m = 4; m < s_cfg.count; ++m) {
+        inputs[n++] = (uint8_t)(m - 4);
+    }
+    inputs[n++] = VSENSE_INPUT;
+    return n;
+}
+
 static void current_task(void *arg)
 {
-    uint8_t ch_a = 0, ch_b = 0; /* 0x48 cycles A0..A3 (CS1-4); 0x49 cycles A0 (CS5), A1 (VSENSE) */
+    uint8_t b_list[4];
+    const int b_count = b_inputs(b_list);
+    const int a_count = s_cfg.count < 4 ? s_cfg.count : 4;
+    uint8_t ch_a = 0;
+    int ib = 0;
     for (;;) {
+        const uint8_t ch_b = b_list[ib];
+        const bool b_is_cs = ch_b != VSENSE_INPUT;
+        const int motor_b = 4 + ch_b;
         /* The duty while the conversion runs: mean of the value at its start and its end
            (the control task updates it at 1 kHz, the conversion window is 0.3 ms). */
         const float d0_a = duty_now(ch_a);
-        const float d0_b = ch_b == 0 ? duty_now(4) : 0.0f;
+        const float d0_b = b_is_cs ? duty_now(motor_b) : 0.0f;
         bool err = start(s_dev_a, ch_a, PGA_256MV) != ESP_OK;
-        err |= start(s_dev_b, ch_b, ch_b == 0 ? PGA_256MV : PGA_4096V) != ESP_OK;
+        err |= start(s_dev_b, ch_b, b_is_cs ? PGA_256MV : PGA_4096V) != ESP_OK;
         vTaskDelay(1); /* 3300 SPS conversion takes 0.3 ms; the tick is 1 ms (CONFIG_FREERTOS_HZ=1000) */
         int16_t raw_a = 0, raw_b = 0;
         err |= read_raw(s_dev_a, &raw_a) != ESP_OK;
         err |= read_raw(s_dev_b, &raw_b) != ESP_OK;
         const float d1_a = duty_now(ch_a);
-        const float d1_b = ch_b == 0 ? duty_now(4) : 0.0f;
+        const float d1_b = b_is_cs ? duty_now(motor_b) : 0.0f;
 
         const float a = amps(raw_a, 0.5f * (d0_a + d1_a));
-        float b_val;
-        if (ch_b == 0) {
-            b_val = amps(raw_b, 0.5f * (d0_b + d1_b));
-        } else {
-            b_val = raw_b * 0.002f * s_cfg.vsense_ratio; /* 4.096 V / 2048 = 2 mV per LSB */
-        }
+        const float b_val = b_is_cs ? amps(raw_b, 0.5f * (d0_b + d1_b)) : raw_b * 0.002f * s_cfg.vsense_ratio; /* 4.096 V / 2048 = 2 mV per LSB */
 
         portENTER_CRITICAL(&s_lock);
         s_state.bus_error = err;
         if (!err) {
             s_state.current_a[ch_a] += 0.5f * (a - s_state.current_a[ch_a]);
-            if (ch_b == 0) {
-                s_state.current_a[4] += 0.5f * (b_val - s_state.current_a[4]);
+            if (b_is_cs) {
+                s_state.current_a[motor_b] += 0.5f * (b_val - s_state.current_a[motor_b]);
             } else {
                 s_state.rail_v += 0.5f * (b_val - s_state.rail_v);
                 s_state.rail_ok = s_state.rail_v >= s_cfg.rail_ok_v;
             }
         }
         portEXIT_CRITICAL(&s_lock);
-        ch_a = (uint8_t)((ch_a + 1) & 3);
-        ch_b ^= 1;
+        ch_a = (uint8_t)((ch_a + 1) % a_count);
+        ib = (ib + 1) % b_count;
     }
 }
 
 esp_err_t current_init(const current_config_t *cfg)
 {
+    if (!cfg || cfg->count < 1 || cfg->count > 7) {
+        return ESP_ERR_INVALID_ARG;
+    }
     s_cfg = *cfg;
     if (s_cfg.mv_per_a <= 0.0f) s_cfg.mv_per_a = 20.0f;
     if (s_cfg.vsense_ratio <= 0.0f) s_cfg.vsense_ratio = 4.9f;
@@ -126,13 +143,13 @@ esp_err_t current_init(const current_config_t *cfg)
         return err;
     }
     /* Probe both with a config write before the task starts. */
-    if ((err = start(s_dev_a, 0, PGA_256MV)) != ESP_OK || (err = start(s_dev_b, 1, PGA_4096V)) != ESP_OK) {
+    if ((err = start(s_dev_a, 0, PGA_256MV)) != ESP_OK || (err = start(s_dev_b, VSENSE_INPUT, PGA_4096V)) != ESP_OK) {
         ESP_LOGE(TAG, "ADS1015 not answering: %s", esp_err_to_name(err));
         return err;
     }
     xTaskCreatePinnedToCore(current_task, "current", 3072, NULL, 8, NULL, 0);
-    ESP_LOGI(TAG, "two ADS1015 at 0x%02x/0x%02x, %.0f mV/A, duty floor %.2f", cfg->addr_a, cfg->addr_b, (double)s_cfg.mv_per_a,
-             (double)s_cfg.min_duty);
+    ESP_LOGI(TAG, "two ADS1015 at 0x%02x/0x%02x for %d motors, %.0f mV/A, duty floor %.2f", cfg->addr_a, cfg->addr_b, cfg->count,
+             (double)s_cfg.mv_per_a, (double)s_cfg.min_duty);
     return ESP_OK;
 }
 
