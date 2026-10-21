@@ -25,7 +25,7 @@ menu "Talos ESP Driver Configuration"
             range 0 2
             default 0
             help
-                0 = the DevKitC-1's USB-UART bridge (the first USB-C socket, "UART"): the
+                0 = the DevKitC-1's USB-UART bridge (the first micro-USB socket, "UART"): the
                 Pi link and the flashing port. The console is the S3's USB-Serial-JTAG
                 peripheral on the second socket (sdkconfig.defaults), so no UART pin is
                 spent on logging.
@@ -125,7 +125,11 @@ menu "Talos ESP Driver Configuration"
             default 13
         config SC_SPI_HZ
             int "SPI clock (Hz)"
-            default 10000000
+            default 4000000
+            help
+                The LS7366R needs 120 ns SCK high and low at 3.3 V (datasheet, transient
+                characteristics at VDD 3.3 V), so 4 MHz is the limit; 10 MHz is a 5 V figure.
+                Seven 5-byte reads take about 100 us a tick at 4 MHz.
         config SC_CNT1_CS_GPIO
             int "Counter 1 chip select"
             default 10
@@ -156,7 +160,21 @@ menu "Talos ESP Driver Configuration"
             default 4000000
             help
                 The LS7366R samples its A/B inputs with this clock; it must be well above
-                the quadrature rate (the fastest encoder makes about 8 kHz of edges).
+                the quadrature rate (the fastest encoder makes about 8 kHz of edges) and at
+                most 20 MHz at 3.3 V. A quadrature pulse shorter than two clock periods is
+                rejected as noise.
+        config SC_CNT_INDEX_LATCH
+            bool "Latch the switch-edge count in the counters (index mode load OTR)"
+            default n
+            help
+                Each counter's INDEX/ pin is the channel's limit-switch line. With this on,
+                the chip copies CNTR into OTR on the index (a pressed switch with the
+                board's active-low wiring) and the firmware reads OTR as the homing capture.
+                Off, the firmware reads CNTR as soon as the switch interrupt lands, a few
+                counts late at the fastest encoder rate. Turn it on once the bench shows
+                the OTR holds the count at the edge and does not follow CNTR while the
+                switch stays pressed (the datasheet does not say which). In both modes a
+                periodic CNTR read copies CNTR into OTR, so the latch is read first.
     endmenu
 
     menu "I2C: expanders and ADCs"

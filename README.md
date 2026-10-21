@@ -72,11 +72,11 @@ operator so its DTR/RTS ioctls succeed on a pty. The operator's own log (`/tmp/t
 cd esp-driver
 idf.py set-target esp32s3
 idf.py menuconfig          # "Talos ESP Driver Configuration": link mode, joints (7), pins, the rev 0.4 defaults
-idf.py build flash         # flashing goes through the "UART" USB-C socket, the same one the Pi uses
+idf.py build flash         # flashing goes through the "UART" micro-USB socket, the same one the Pi uses
 idf.py monitor -p /dev/ttyACM0   # the console is the other socket, "USB" (USB-Serial-JTAG)
 ```
 
-The link is UART0, the DevKit's USB-UART bridge (the first USB-C socket); the console,
+The link is UART0, the DevKit's USB-UART bridge (the first micro-USB socket); the console,
 logs and JTAG are the S3's USB-Serial-JTAG peripheral on the second socket, so no UART
 pin is spent and nothing but the protocol reaches the Pi after the ROM's own boot line
 (silenced for good by burning the `UART_PRINT_CONTROL` eFuse to 3 with `espefuse.py`, a
@@ -105,9 +105,9 @@ Nothing here has been compiled against ESP-IDF yet (the host build is what has r
 the first `idf.py build` on a machine with the toolchain is the next step. The LS7366R
 register map in `encoder_ls7366r.h` is from the part's common usage, not read off the
 datasheet in this sandbox: the init reads MDR0 back and fails loudly if a chip disagrees.
-The limit-switch latch is the software one (counters read about 40 us after the
+The limit-switch latch is the software one (counters read about 100 us after the
 interrupt); the chips' INDEX inputs are wired to the switch lines on the board so the
-hardware latch can take over once its polarity is seen on the bench.
+hardware latch (`SC_CNT_INDEX_LATCH`, the chip's index mode "load OTR") can take over once the bench shows the OTR holds the count at the switch edge rather than following CNTR while the switch is held; either way a periodic CNTR read copies CNTR into OTR, so the latch is read first.
 
 ## Sync with the ROS side
 

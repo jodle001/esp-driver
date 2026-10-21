@@ -82,7 +82,7 @@ static void limit_switch_task(void *arg)
         int32_t latched[LIMIT_SWITCH_MAX];
         bool edge = false;
         if (notified) {
-            edge = ls7366r_read_all(latched) == ESP_OK; /* the latch, first */
+            edge = ls7366r_read_latch_all(latched) == ESP_OK; /* the latch first: a CNTR read would overwrite it */
             uint8_t intf_a, intf_b, cap_a, cap_b;
             bool handled = false;
             if (expander_read_interrupt(s_cfg.sense, &intf_a, &intf_b, &cap_a, &cap_b) == ESP_OK) {

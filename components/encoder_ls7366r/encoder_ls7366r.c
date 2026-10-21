@@ -18,8 +18,10 @@ static const char *TAG = "ls7366r";
 #define REG_MDR0 (1u << 3)
 #define REG_MDR1 (2u << 3)
 #define REG_CNTR (4u << 3)
-#define MDR0_X4_FREE_RUNNING 0x03 /* x4 quadrature, index off, asynchronous, filter /1 */
-#define MDR1_4_BYTES_ENABLED 0x00
+#define REG_OTR (5u << 3)
+#define MDR0_X4_FREE_RUNNING 0x03 /* bits 1:0 = 11 x4 quadrature, 3:2 = 00 free running, 6 = 0 asynchronous index, 7 = 0 filter /1 */
+#define MDR0_INDEX_LOAD_OTR 0x30  /* bits 5:4 = 11: the index edge transfers CNTR into OTR */
+#define MDR1_4_BYTES_ENABLED 0x00 /* bits 1:0 = 00 4-byte counter, 2 = 0 counting enabled, no flags */
 
 #if SOC_LEDC_SUPPORT_HS_MODE
 #define CLK_SPEED_MODE LEDC_HIGH_SPEED_MODE
@@ -60,9 +62,9 @@ static esp_err_t read_reg8(int chip, uint8_t reg, uint8_t *value)
     return err;
 }
 
-static esp_err_t read_cntr(int chip, int32_t *count)
+static esp_err_t read_reg32(int chip, uint8_t reg, int32_t *count)
 {
-    const uint8_t tx[5] = {OP_RD | REG_CNTR, 0, 0, 0, 0};
+    const uint8_t tx[5] = {(uint8_t)(OP_RD | reg), 0, 0, 0, 0};
     uint8_t rx[5] = {0};
     const esp_err_t err = xfer(chip, tx, rx, sizeof(tx));
     if (err == ESP_OK) {
@@ -106,7 +108,7 @@ esp_err_t ls7366r_init(const ls7366r_config_t *cfg)
     }
     s_cfg = *cfg;
     if (s_cfg.spi_hz == 0) {
-        s_cfg.spi_hz = 10000000;
+        s_cfg.spi_hz = 4000000; /* 120 ns SCK high and low at 3.3 V: 4.16 MHz is the limit */
     }
     s_mutex = xSemaphoreCreateMutex();
     if (!s_mutex) {
@@ -155,13 +157,15 @@ esp_err_t ls7366r_init(const ls7366r_config_t *cfg)
     if ((err = spi_bus_add_device(SPI2_HOST, &dev, &s_dev)) != ESP_OK) {
         return err;
     }
-    /* Configure and verify every chip: x4, free running, 4-byte counter, count cleared. */
+    /* Configure and verify every chip: x4, free running, 4-byte counter, count cleared,
+       the index latch into OTR if asked for. */
+    const uint8_t mdr0_want = MDR0_X4_FREE_RUNNING | (s_cfg.index_latch ? MDR0_INDEX_LOAD_OTR : 0);
     for (int i = 0; i < cfg->count; ++i) {
         uint8_t mdr0 = 0xFF;
-        if ((err = write_reg(i, REG_MDR0, MDR0_X4_FREE_RUNNING)) != ESP_OK) return err;
+        if ((err = write_reg(i, REG_MDR0, mdr0_want)) != ESP_OK) return err;
         if ((err = write_reg(i, REG_MDR1, MDR1_4_BYTES_ENABLED)) != ESP_OK) return err;
         if ((err = read_reg8(i, REG_MDR0, &mdr0)) != ESP_OK) return err;
-        if (mdr0 != MDR0_X4_FREE_RUNNING) {
+        if (mdr0 != mdr0_want) {
             ESP_LOGE(TAG, "counter %d (CS GPIO %d) does not answer: MDR0 read 0x%02x", i + 1, cfg->cs_gpio[i], mdr0);
             return ESP_ERR_NOT_FOUND;
         }
@@ -169,8 +173,9 @@ esp_err_t ls7366r_init(const ls7366r_config_t *cfg)
         uint8_t rx;
         if ((err = xfer(i, &clr, &rx, 1)) != ESP_OK) return err;
     }
-    ESP_LOGI(TAG, "%d counters on SPI2 at %lu Hz, filter clock %lu Hz on GPIO %d", cfg->count, (unsigned long)s_cfg.spi_hz,
-             (unsigned long)(cfg->clk_hz ? cfg->clk_hz : 4000000), cfg->clk_gpio);
+    ESP_LOGI(TAG, "%d counters on SPI2 at %lu Hz, filter clock %lu Hz on GPIO %d, index latch %s", cfg->count,
+             (unsigned long)s_cfg.spi_hz, (unsigned long)(cfg->clk_hz ? cfg->clk_hz : 4000000), cfg->clk_gpio,
+             s_cfg.index_latch ? "in the counters (OTR)" : "in software");
     return ESP_OK;
 }
 
@@ -181,7 +186,21 @@ esp_err_t ls7366r_read_all(int32_t *counts)
     }
     esp_err_t err = ESP_OK;
     for (int i = 0; i < s_cfg.count && err == ESP_OK; ++i) {
-        err = read_cntr(i, &counts[i]);
+        err = read_reg32(i, REG_CNTR, &counts[i]);
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+esp_err_t ls7366r_read_latch_all(int32_t *counts)
+{
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(5)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = ESP_OK;
+    const uint8_t reg = s_cfg.index_latch ? REG_OTR : REG_CNTR;
+    for (int i = 0; i < s_cfg.count && err == ESP_OK; ++i) {
+        err = read_reg32(i, reg, &counts[i]);
     }
     xSemaphoreGive(s_mutex);
     return err;
@@ -195,7 +214,7 @@ esp_err_t ls7366r_read(int chip, int32_t *count)
     if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(5)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
-    const esp_err_t err = read_cntr(chip, count);
+    const esp_err_t err = read_reg32(chip, REG_CNTR, count);
     xSemaphoreGive(s_mutex);
     return err;
 }

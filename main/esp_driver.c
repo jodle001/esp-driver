@@ -303,6 +303,9 @@ void app_main(void)
         .clk_gpio = CONFIG_SC_CNT_CLK_GPIO,
         .clk_hz = CONFIG_SC_CNT_CLK_HZ,
         .spi_hz = CONFIG_SC_SPI_HZ,
+#ifdef CONFIG_SC_CNT_INDEX_LATCH
+        .index_latch = true,
+#endif
         .ledc_channel = 7, /* the motors use 0..6 */
     };
     err = ls7366r_init(&ec);
