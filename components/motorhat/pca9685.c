@@ -59,6 +59,15 @@ esp_err_t pca9685_init(pca9685_handle_t* handle,
     return ret;
   }
 
+  // Force all 16 outputs off before waking the chip.  The PCA9685 keeps its
+  // output registers through an ESP32 reset, so a motor driven before the
+  // reset would otherwise keep running.  Bit 4 of ALL_LED_OFF_H is "full off"
+  // and is loaded into every channel at once.
+  ret = pca9685_write_register(handle, PCA9685_ALL_LED_OFF_H, 0x10);
+  if (ret != ESP_OK) {
+    return ret;
+  }
+
   // Reset the chip
   ret = pca9685_write_register(handle, PCA9685_MODE1, 0x00);
   if (ret != ESP_OK) {

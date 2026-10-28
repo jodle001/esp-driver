@@ -105,6 +105,7 @@ typedef struct {
   void* axis_count_ctx; /**< Context passed to axis_count_cb */
   bool forward_increases_count[MOTORHAT_NUM_AXES]; /**< Per axis, true if FORWARD makes the encoder count go up */
   uint32_t soft_limit_poll_ms; /**< How often the soft limit monitor checks moving axes */
+  uint32_t max_run_ms; /**< Stop an axis driven this long without a new start command, 0 disables */
 } motorhat_config_t;
 
 /**
@@ -123,6 +124,7 @@ typedef struct {
   void* axis_count_ctx; /**< Context passed to axis_count_cb */
   bool forward_increases_count[MOTORHAT_NUM_AXES]; /**< Per axis, true if FORWARD makes the encoder count go up */
   uint32_t soft_limit_poll_ms; /**< How often the soft limit monitor checks moving axes */
+  uint32_t max_run_ms; /**< Stop an axis driven this long without a new start command, 0 disables */
 } motorhat_handle_t;
 
 /**

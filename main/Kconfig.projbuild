@@ -80,6 +80,16 @@ menu "Talos ESP Driver Configuration"
         help
             Listening port for the server.
 
+    config DRIVER_MAX_RUN_MS
+        int "Longest a pan may run without a new start command (ms)"
+        range 0 60000
+        default 3000
+        help
+            An axis driven longer than this since the last polar pan start
+            command is stopped. Commander's auto tracking repeats the start
+            command every 100 ms; a manual key press sends it once. 0 turns
+            the check off.
+
 endmenu
 
 menu "Soft Limits"

@@ -15,6 +15,9 @@ static motorhat_handle_t* s_handle = NULL;
 // Last direction commanded on each axis
 static motorhat_direction_t s_axis_direction[MOTORHAT_NUM_AXES];
 
+// Tick of the last start command that drove each axis, for the max run check
+static TickType_t s_axis_started[MOTORHAT_NUM_AXES];
+
 // Held while checking soft limits and writing axis motor state. Check and motor writes that follow can't be intertwined with another task
 static SemaphoreHandle_t s_axis_lock = NULL;
 
@@ -97,16 +100,18 @@ esp_err_t motorhat_init(motorhat_handle_t* handle,
     handle->forward_increases_count[axis] = config->forward_increases_count[axis];
   }
   handle->soft_limit_poll_ms = config->soft_limit_poll_ms;
-
-  xTaskCreate(motor_stop_task, "motor_stop_task", 4096, handle, 8, NULL);
-
+  handle->max_run_ms = config->max_run_ms;
 
   esp_err_t err = pca9685_init(&handle->pca9685, &config->pca9685_config);
   if (err != ESP_OK) {
     return err;
   }
 
-  if (handle->soft_limits_enabled) {
+  // Started after the PCA9685 is ready; it may emergency stop at once.
+  xTaskCreate(motor_stop_task, "motor_stop_task", 4096, handle, 8, NULL);
+
+  // Watches moving axes for soft limits and the max run time
+  if (handle->soft_limits_enabled || handle->max_run_ms > 0) {
     if (xTaskCreate(soft_limit_monitor_task, "soft_limit_task", 4096, NULL, 9, NULL) != pdPASS) {
       return ESP_ERR_NO_MEM;
     }
@@ -300,45 +305,64 @@ static bool soft_limit_allows(motorhat_axis_t axis, motorhat_direction_t directi
   return true;
 }
 
-// Stops an axis that is being driven past its soft limit.
-// If stop fails, stop every motor instead so a failed write can never leave a motor running past its limits
+// Brakes one axis. If that fails, stop every motor instead so a failed write
+// can never leave a motor running.
 // Caller must hold s_axis_lock.
-static void stop_axis_at_limit(motorhat_axis_t axis) {
+static void stop_axis(motorhat_axis_t axis) {
   esp_err_t err = motorhat_set_motor_speed(s_handle, axis_motor[axis], 0);
   if (err == ESP_OK) {
-    err = motorhat_set_motor_direction(s_handle, axis_motor[axis], MOTORHAT_DIRECTION_BRAKE);
+    err = motorhat_set_motor_direction(s_handle, axis_motor[axis],
+                                       MOTORHAT_DIRECTION_BRAKE);
   }
 
   if (err == ESP_OK) {
     s_axis_direction[axis] = MOTORHAT_DIRECTION_BRAKE;
-    ESP_LOGW(TAG, "Axis %d stopped at soft limit", axis);
     return;
   }
 
-  ESP_LOGE(TAG, "Axis %d soft limit stop failed (%s), stopping all motors", axis, esp_err_to_name(err));
+  ESP_LOGE(TAG, "Axis %d stop failed (%s), stopping all motors", axis,
+           esp_err_to_name(err));
   motorhat_emergency_stop(s_handle);
   for (int axis = MOTORHAT_AXIS_AZIMUTH; axis < MOTORHAT_NUM_AXES; axis++) {
     s_axis_direction[axis] = MOTORHAT_DIRECTION_RELEASE;
   }
 }
 
-// Every soft_limit_poll_ms, stops any axis being driven past soft limit. Uses same rule as polar pan start (soft_limit_allows),
-// so a moving axis stops where a new start command in that direction would be refused
+// Every soft_limit_poll_ms, stops any axis being driven past its soft limit
+// (the same rule as polar pan start, soft_limit_allows, so a moving axis stops
+// where a new start in that direction would be refused) or driven longer than
+// max_run_ms without a new start command.
 static void soft_limit_monitor_task(void* args) {
-  // At CONFIG_FREERTOS_HZ=100 a tick is 10ms so shorter periods round down to 0 ticks which vTaskDelayUntil does not allow
+  // At CONFIG_FREERTOS_HZ=100 a tick is 10ms so shorter periods round down to 0
+  // ticks which vTaskDelayUntil does not allow
   TickType_t period = pdMS_TO_TICKS(s_handle->soft_limit_poll_ms);
   if (period == 0) {
     period = 1;
   }
+  TickType_t max_run_ticks = pdMS_TO_TICKS(s_handle->max_run_ms);
 
   TickType_t last_wake = xTaskGetTickCount();
-  while(1) {
+  while (1) {
     vTaskDelayUntil(&last_wake, period);
 
     xSemaphoreTake(s_axis_lock, portMAX_DELAY);
+    TickType_t now = xTaskGetTickCount();
     for (int axis = MOTORHAT_AXIS_AZIMUTH; axis < MOTORHAT_NUM_AXES; axis++) {
-      if (!soft_limit_allows(axis, s_axis_direction[axis])) {
-        stop_axis_at_limit(axis);
+      motorhat_direction_t direction = s_axis_direction[axis];
+      if (direction != MOTORHAT_DIRECTION_FORWARD &&
+          direction != MOTORHAT_DIRECTION_BACKWARD) {
+        continue;
+      }
+
+      if (s_handle->soft_limits_enabled &&
+          !soft_limit_allows(axis, direction)) {
+        ESP_LOGW(TAG, "Axis %d stopped at soft limit", axis);
+        stop_axis(axis);
+      } else if (max_run_ticks > 0 &&
+                 now - s_axis_started[axis] > max_run_ticks) {
+        ESP_LOGW(TAG, "Axis %d ran %" PRIu32 " ms without a new start, stopped",
+                 axis, s_handle->max_run_ms);
+        stop_axis(axis);
       }
     }
     xSemaphoreGive(s_axis_lock);
@@ -385,6 +409,7 @@ static esp_err_t start_axes(motorhat_direction_t directions[MOTORHAT_NUM_AXES]) 
     if (err != ESP_OK) {
       return err;
     }
+    s_axis_started[axis] = xTaskGetTickCount();
   }
 
   return ESP_OK;
