@@ -92,6 +92,38 @@ menu "Talos ESP Driver Configuration"
 
 endmenu
 
+menu "Axes"
+    config DRIVER_AZIMUTH_MOTOR
+        int "Motor HAT port driving azimuth (base), 1-4 = M1-M4"
+        range 1 4
+        default 3
+
+    config DRIVER_AZIMUTH_ENCODER_A_PIN
+        int "Azimuth encoder channel A (P0) GPIO"
+        range 0 39
+        default 36
+
+    config DRIVER_AZIMUTH_ENCODER_B_PIN
+        int "Azimuth encoder channel B (P1) GPIO"
+        range 0 39
+        default 39
+
+    config DRIVER_ALTITUDE_MOTOR
+        int "Motor HAT port driving altitude, 1-4 = M1-M4"
+        range 1 4
+        default 4
+
+    config DRIVER_ALTITUDE_ENCODER_A_PIN
+        int "Altitude encoder channel A (P0) GPIO"
+        range 0 39
+        default 34
+
+    config DRIVER_ALTITUDE_ENCODER_B_PIN
+        int "Altitude encoder channel B (P1) GPIO"
+        range 0 39
+        default 35
+endmenu
+
 menu "Soft Limits"
     config DRIVER_SOFT_LIMITS_ENABLE
         bool "Enable encoder soft limits"

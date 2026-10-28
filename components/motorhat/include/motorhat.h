@@ -32,16 +32,8 @@ typedef enum {
 } motorhat_axis_t;
 
 /**
- * @brief Mapping of axes to motors
- */
-static const motorhat_motor_t axis_motor[MOTORHAT_NUM_AXES] = {
-    [MOTORHAT_AXIS_AZIMUTH] = MOTORHAT_MOTOR3,
-    [MOTORHAT_AXIS_ALTITUDE] = MOTORHAT_MOTOR4,
-};
-
-/**
  * @brief Soft limit bounds for one axis in raw encoder counts
- * 
+ *
  * Count 0 is the position the arm was in when the ESP32 booted (the manually homed position)
  * An axis may not be driven past min_count or max_count
  */
@@ -52,11 +44,11 @@ typedef struct {
 
 /**
  * @brief Function callback for reading the encoder count of one axis
- * 
+ *
  * @param[in] ctx Callback context (axis_count_ctx)
  * @param[in] axis Axis to read
  * @param[out] count Raw encoder count of that axis
- * 
+ *
  * @return ESP_OK on success
  */
 typedef esp_err_t (*motorhat_axis_count_cb_t)(void* ctx, motorhat_axis_t axis, int* count);
@@ -106,6 +98,7 @@ typedef struct {
   bool forward_increases_count[MOTORHAT_NUM_AXES]; /**< Per axis, true if FORWARD makes the encoder count go up */
   uint32_t soft_limit_poll_ms; /**< How often the soft limit monitor checks moving axes */
   uint32_t max_run_ms; /**< Stop an axis driven this long without a new start command, 0 disables */
+  motorhat_motor_t axis_motor[MOTORHAT_NUM_AXES]; /**< Motor HAT port driving each axis, indexed by motorhat_axis_t */
 } motorhat_config_t;
 
 /**
@@ -125,6 +118,7 @@ typedef struct {
   bool forward_increases_count[MOTORHAT_NUM_AXES]; /**< Per axis, true if FORWARD makes the encoder count go up */
   uint32_t soft_limit_poll_ms; /**< How often the soft limit monitor checks moving axes */
   uint32_t max_run_ms; /**< Stop an axis driven this long without a new start command, 0 disables */
+  motorhat_motor_t axis_motor[MOTORHAT_NUM_AXES]; /**< Motor HAT port driving each axis, indexed by motorhat_axis_t */
 } motorhat_handle_t;
 
 /**
@@ -219,16 +213,16 @@ esp_err_t motorhat_polar_pan_stop(void);
  *
  * Moves the motors to a predefined home position after an optional delay. Blocks high level movement commands
  * such as polar pan, setting the motor speed and direction directly to operate around these commands.
- * 
+ *
  * The homing sequence is modeled after the sequence demonstrated by the SCORBOT ER-V, since both robots
  * have the unusual placement of their limit switches at the centers of their corresponding axis's range,
  * rather than at the edges. The one difference is that this homing sequence starts with moving each motor FORWARD,
  * and ends with it moving BACKWARD to release the limit switch. This is because for the vertical axis, the slowed
  * down motion to release the limit switch and reach the final homed position currently stalls the motor when moving upward,
- * so I've reversed the order so that it happens while moving downward. This should be fixed by replacing the 
+ * so I've reversed the order so that it happens while moving downward. This should be fixed by replacing the
  * current motor drivers with ones capable of pushing the proper amount of amps to drive the motors,
  * but in the meantime reversing the order of FORWARD and BACKWArd motion in homing avoids this issue.
- * 
+ *
  * IMPORTANT: until current sensing is fully functional, the robot can't detect reaching the edge of it's range and will
  * break if you attempt to home it while the arm is on the wrong side of the limit switch.
  *

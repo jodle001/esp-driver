@@ -142,8 +142,8 @@ void app_main(void) {
   // Initialize encoders
   encoder_handle_t encoders[2];
   encoder_config_t encoder_axis1_config = {
-      .P0_pin = 36,
-      .P1_pin = 39,
+      .P0_pin = CONFIG_DRIVER_AZIMUTH_ENCODER_A_PIN,
+      .P1_pin = CONFIG_DRIVER_AZIMUTH_ENCODER_B_PIN,
       .resolution = CONFIG_ENCODER_0_RESOLUTION,
       .glitch_filter_ns = CONFIG_ENCODER_GLITCH_FILTER,
       .invert_angle = CONFIG_ENCODER_0_ANGLE_INVERT,
@@ -152,8 +152,8 @@ void app_main(void) {
   ESP_ERROR_CHECK(encoder_start(&encoders[0]));
 
   encoder_config_t encoder_axis2_config = {
-      .P0_pin = 34,
-      .P1_pin = 35,
+      .P0_pin = CONFIG_DRIVER_ALTITUDE_ENCODER_A_PIN,
+      .P1_pin = CONFIG_DRIVER_ALTITUDE_ENCODER_B_PIN,
       .resolution = CONFIG_ENCODER_0_RESOLUTION,
       .glitch_filter_ns = CONFIG_ENCODER_GLITCH_FILTER,
       .invert_angle = CONFIG_ENCODER_0_ANGLE_INVERT,
@@ -185,6 +185,11 @@ void app_main(void) {
       .axis_count_cb = read_axis_count,
       .axis_count_ctx = &encoder_array,
       .max_run_ms = CONFIG_DRIVER_MAX_RUN_MS,
+      .axis_motor =
+          {
+            [MOTORHAT_AXIS_AZIMUTH] = CONFIG_DRIVER_AZIMUTH_MOTOR - 1,
+            [MOTORHAT_AXIS_ALTITUDE] = CONFIG_DRIVER_ALTITUDE_MOTOR - 1,
+          },
   };
 
   #ifdef CONFIG_DRIVER_SOFT_LIMITS_ENABLE

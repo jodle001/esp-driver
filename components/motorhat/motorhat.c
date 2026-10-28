@@ -55,6 +55,22 @@ esp_err_t motorhat_init(motorhat_handle_t* handle,
     return ESP_ERR_INVALID_ARG;
   }
 
+  // Each axis needs its own valid port, or two axes would fight over one motor
+  for (int axis = MOTORHAT_AXIS_AZIMUTH; axis < MOTORHAT_NUM_AXES; axis++) {
+    motorhat_motor_t motor = config->axis_motor[axis];
+    if (motor < MOTORHAT_MOTOR1 || motor >= MOTORHAT_NUM_MOTORS) {
+      ESP_LOGE(TAG, "Axis %d mapped to invalid motor %d", axis, motor + 1);
+      return ESP_ERR_INVALID_ARG;
+    }
+    for (int other = MOTORHAT_AXIS_AZIMUTH; other < axis; other++) {
+      if (config->axis_motor[other] == motor) {
+        ESP_LOGE(TAG, "Axes %d and %d both mapped to motor %d", other, axis,
+                 motor + 1);
+        return ESP_ERR_INVALID_ARG;
+      }
+    }
+  }
+
   if (config->soft_limits_enabled) {
     if (config->axis_count_cb == NULL) {
       ESP_LOGE(TAG, "Soft limits enabled but no axis count callback given");
@@ -80,8 +96,8 @@ esp_err_t motorhat_init(motorhat_handle_t* handle,
   if (s_axis_lock == NULL) {
     return ESP_ERR_NO_MEM;
   }
-  
-  // FORWARD is 0 so the zero initialized array must be set explicitly 
+
+  // FORWARD is 0 so the zero initialized array must be set explicitly
   for (int axis = MOTORHAT_AXIS_AZIMUTH; axis < MOTORHAT_NUM_AXES; axis++) {
     s_axis_direction[axis] = MOTORHAT_DIRECTION_RELEASE;
   }
@@ -98,6 +114,7 @@ esp_err_t motorhat_init(motorhat_handle_t* handle,
   for (int axis = MOTORHAT_AXIS_AZIMUTH; axis < MOTORHAT_NUM_AXES; axis++) {
     handle->soft_limits[axis] = config->soft_limits[axis];
     handle->forward_increases_count[axis] = config->forward_increases_count[axis];
+    handle->axis_motor[axis] = config->axis_motor[axis];
   }
   handle->soft_limit_poll_ms = config->soft_limit_poll_ms;
   handle->max_run_ms = config->max_run_ms;
@@ -133,7 +150,7 @@ esp_err_t motorhat_home(uint16_t delay_ms) {
     ESP_LOGW(TAG, "Soft limits enabled, home command rejected");
     return ESP_ERR_NOT_SUPPORTED;
   }
-  
+
   if (s_handle == NULL) return ESP_ERR_INVALID_STATE;
 
   ESP_LOGI(TAG, "Received home command: delay_ms=%d", delay_ms);
@@ -152,17 +169,17 @@ esp_err_t motorhat_home(uint16_t delay_ms) {
 
   // Home each axis individually until we candetermine which motor triggers limit switch and current events
   for (int axis = MOTORHAT_AXIS_AZIMUTH; axis < MOTORHAT_NUM_AXES; axis++) {
-    int m = axis_motor[axis];
+    int m = s_handle->axis_motor[axis];
     ESP_LOGI(TAG, "Homing motor %d", m);
 
     motorhat_set_motor_direction(s_handle, m, MOTORHAT_DIRECTION_FORWARD);
     motorhat_set_motor_speed(s_handle, m, s_handle->polar_pan_speed);
 
     EventBits_t bits = xEventGroupWaitBits(
-      g_motor_events, 
-      HOME_EVENT, 
-      pdTRUE, 
-      pdFALSE, 
+      g_motor_events,
+      HOME_EVENT,
+      pdTRUE,
+      pdFALSE,
       portMAX_DELAY
     );
 
@@ -171,7 +188,7 @@ esp_err_t motorhat_home(uint16_t delay_ms) {
 
     if (bits & CURRENT_ANY) {
       ESP_LOGI(TAG, "Motor %d hit the forward end of its range", m);
-      
+
       // Small pause before going opposite direction
       vTaskDelay(pdMS_TO_TICKS(200));
 
@@ -180,13 +197,13 @@ esp_err_t motorhat_home(uint16_t delay_ms) {
       motorhat_set_motor_speed(s_handle, m, s_handle->polar_pan_speed);
 
       bits = xEventGroupWaitBits(
-        g_motor_events, 
+        g_motor_events,
         HOME_EVENT,
-        pdTRUE, 
-        pdFALSE, 
+        pdTRUE,
+        pdFALSE,
         portMAX_DELAY
       );
-      
+
       // Stop when a homing event is detected
       motorhat_set_motor_speed(s_handle, m, 0);
 
@@ -201,7 +218,7 @@ esp_err_t motorhat_home(uint16_t delay_ms) {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
         ESP_LOGI(TAG, "Motor %d finished homing", m);
-        
+
         // Homing finished, stop the motor and continue sequence
         motorhat_set_motor_speed(s_handle, m, 0);
         motorhat_set_motor_direction(s_handle, m, MOTORHAT_DIRECTION_RELEASE);
@@ -236,7 +253,7 @@ esp_err_t motorhat_home(uint16_t delay_ms) {
       motorhat_emergency_stop(s_handle);
     }
   }
-  
+
   // Reset encoder values
   if (s_handle->encoder_cb) {
       s_handle->encoder_cb(s_handle->encoder_ctx);
@@ -260,7 +277,7 @@ esp_err_t motorhat_polar_pan(int16_t delta_azimuth, int16_t delta_altitude,
 
   if (s_handle == NULL) return ESP_ERR_INVALID_STATE;
 
-  ESP_LOGI(TAG, "Received polar pan command: delta_azimuth=%d, delta_altitude=%d, delay_ms=%d, time_ms=%d", 
+  ESP_LOGI(TAG, "Received polar pan command: delta_azimuth=%d, delta_altitude=%d, delay_ms=%d, time_ms=%d",
     delta_azimuth, delta_altitude, delay_ms, time_ms);
 
   // TODO: Implement polar pan logic using motorhat_set_motor_direction and
@@ -268,8 +285,8 @@ esp_err_t motorhat_polar_pan(int16_t delta_azimuth, int16_t delta_altitude,
   return ESP_OK;
 }
 
-// Returns true if axis may be driven in this direction. 
-// BRAKE and RELEASE are always allowed. 
+// Returns true if axis may be driven in this direction.
+// BRAKE and RELEASE are always allowed.
 // FORWARD and BACKWARD are refused if they would move the count further past the soft limit the axis has already reached.
 // Caller must hold s_axis_lock
 static bool soft_limit_allows(motorhat_axis_t axis, motorhat_direction_t direction) {
@@ -309,9 +326,9 @@ static bool soft_limit_allows(motorhat_axis_t axis, motorhat_direction_t directi
 // can never leave a motor running.
 // Caller must hold s_axis_lock.
 static void stop_axis(motorhat_axis_t axis) {
-  esp_err_t err = motorhat_set_motor_speed(s_handle, axis_motor[axis], 0);
+  esp_err_t err = motorhat_set_motor_speed(s_handle, s_handle->axis_motor[axis], 0);
   if (err == ESP_OK) {
-    err = motorhat_set_motor_direction(s_handle, axis_motor[axis],
+    err = motorhat_set_motor_direction(s_handle, s_handle->axis_motor[axis],
                                        MOTORHAT_DIRECTION_BRAKE);
   }
 
@@ -385,7 +402,7 @@ static esp_err_t start_axes(motorhat_direction_t directions[MOTORHAT_NUM_AXES]) 
   // set both axes speed to 0 to prevent direction change while moving
   for (int axis = MOTORHAT_AXIS_AZIMUTH; axis < MOTORHAT_NUM_AXES; axis++) {
     esp_err_t err =
-        motorhat_set_motor_speed(s_handle, axis_motor[axis], 0);
+        motorhat_set_motor_speed(s_handle, s_handle->axis_motor[axis], 0);
     if (err != ESP_OK) {
       return err;
     }
@@ -393,7 +410,7 @@ static esp_err_t start_axes(motorhat_direction_t directions[MOTORHAT_NUM_AXES]) 
 
   // Set directions
   for (int axis = MOTORHAT_AXIS_AZIMUTH; axis < MOTORHAT_NUM_AXES; axis++) {
-    esp_err_t err = motorhat_set_motor_direction(s_handle, axis_motor[axis], directions[axis]);
+    esp_err_t err = motorhat_set_motor_direction(s_handle, s_handle->axis_motor[axis], directions[axis]);
     if (err != ESP_OK) {
       return err;
     }
@@ -405,7 +422,7 @@ static esp_err_t start_axes(motorhat_direction_t directions[MOTORHAT_NUM_AXES]) 
     if (blocked[axis]) {
       continue;
     }
-    esp_err_t err = motorhat_set_motor_speed(s_handle, axis_motor[axis], s_handle->polar_pan_speed);
+    esp_err_t err = motorhat_set_motor_speed(s_handle, s_handle->axis_motor[axis], s_handle->polar_pan_speed);
     if (err != ESP_OK) {
       return err;
     }
