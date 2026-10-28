@@ -28,6 +28,7 @@ typedef enum {
 typedef enum {
   MOTORHAT_AXIS_AZIMUTH = 0,
   MOTORHAT_AXIS_ALTITUDE,
+  MOTORHAT_AXIS_ALTITUDE_B, /**< Optional second altitude motor, must stay last */
   MOTORHAT_NUM_AXES
 } motorhat_axis_t;
 
@@ -99,6 +100,8 @@ typedef struct {
   uint32_t soft_limit_poll_ms; /**< How often the soft limit monitor checks moving axes */
   uint32_t max_run_ms; /**< Stop an axis driven this long without a new start command, 0 disables */
   motorhat_motor_t axis_motor[MOTORHAT_NUM_AXES]; /**< Motor HAT port driving each axis, indexed by motorhat_axis_t */
+  bool altitude_b_enabled; /**< Altitude commands also drive MOTORHAT_AXIS_ALTITUDE_B */
+  bool altitude_b_reversed; /**< Drive ALTITUDE_B opposite to ALTITUDE (pitch on a differential wrist) */
 } motorhat_config_t;
 
 /**
@@ -119,6 +122,8 @@ typedef struct {
   uint32_t soft_limit_poll_ms; /**< How often the soft limit monitor checks moving axes */
   uint32_t max_run_ms; /**< Stop an axis driven this long without a new start command, 0 disables */
   motorhat_motor_t axis_motor[MOTORHAT_NUM_AXES]; /**< Motor HAT port driving each axis, indexed by motorhat_axis_t */
+  bool altitude_b_reversed; /**< Drive ALTITUDE_B opposite to ALTITUDE (pitch on a differential wrist) */
+  int num_axes; /**< Axes in use, MOTORHAT_NUM_AXES with ALTITUDE_B enabled and one fewer without */
 } motorhat_handle_t;
 
 /**
