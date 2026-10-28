@@ -139,17 +139,6 @@ void app_main(void) {
   };
   ESP_ERROR_CHECK(limit_switch_init(&limit_switch_config));
 
-  // Initialize current sensing
-  ads1015_handle_t ads;
-  ads1015_config_t ads_config = {
-      .i2c_addr = CONFIG_DRIVER_ADS1015_ADDRESS,
-      .i2c_speed_hz = 400000,
-      .rdy_gpio = CONFIG_DRIVER_ADS1015_RDY_PIN,
-      .bus_handle = bus.handle,
-      .adc_data_rate = CONFIG_DRIVER_ADS1015_DATA_RATE,
-  };
-  ESP_ERROR_CHECK(ads1015_init(&ads, &ads_config));
-
   // Initialize encoders
   encoder_handle_t encoders[2];
   encoder_config_t encoder_axis1_config = {
@@ -234,6 +223,17 @@ void app_main(void) {
   #endif
 
   ESP_ERROR_CHECK(motorhat_init(&motorhat, &motorhat_config));
+
+  // Initialize current sensing
+  ads1015_handle_t ads;
+  ads1015_config_t ads_config = {
+      .i2c_addr = CONFIG_DRIVER_ADS1015_ADDRESS,
+      .i2c_speed_hz = 400000,
+      .rdy_gpio = CONFIG_DRIVER_ADS1015_RDY_PIN,
+      .bus_handle = bus.handle,
+      .adc_data_rate = CONFIG_DRIVER_ADS1015_DATA_RATE,
+  };
+  ESP_ERROR_CHECK(ads1015_init(&ads, &ads_config));
 
   // Initialize Wi-Fi and socket connection
   driver_wifi_config_t wifi_config = {

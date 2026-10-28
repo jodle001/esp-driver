@@ -98,13 +98,13 @@ esp_err_t motorhat_init(motorhat_handle_t* handle,
   }
   handle->soft_limit_poll_ms = config->soft_limit_poll_ms;
 
-  xTaskCreate(motor_stop_task, "motor_stop_task", 4096, handle, 8, NULL);
-
-
   esp_err_t err = pca9685_init(&handle->pca9685, &config->pca9685_config);
   if (err != ESP_OK) {
     return err;
   }
+
+  // Started after the PCA9685 is ready; it may emergency stop at once.
+  xTaskCreate(motor_stop_task, "motor_stop_task", 4096, handle, 8, NULL);
 
   if (handle->soft_limits_enabled) {
     if (xTaskCreate(soft_limit_monitor_task, "soft_limit_task", 4096, NULL, 9, NULL) != pdPASS) {
