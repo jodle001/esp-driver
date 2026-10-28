@@ -184,6 +184,7 @@ void app_main(void) {
 
       .axis_count_cb = read_axis_count,
       .axis_count_ctx = &encoder_array,
+      .max_run_ms = CONFIG_DRIVER_MAX_RUN_MS,
   };
 
   #ifdef CONFIG_DRIVER_SOFT_LIMITS_ENABLE
