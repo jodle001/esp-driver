@@ -146,6 +146,7 @@ void driver_socket_task(void* arg) {
                    sock[i], len);
           close(sock[i]);
           sock[i] = INVALID_SOCK;
+          driver_socket_api_client_closed();
         } else if (len > 0) {
           driver_socket_api_process(rx_buffer, len);
           ESP_LOGI(TAG, "[sock=%d]: Received %.*s", sock[i], len, rx_buffer);
@@ -162,6 +163,7 @@ void driver_socket_task(void* arg) {
                 sock[i], len);
             close(sock[i]);
             sock[i] = INVALID_SOCK;
+            driver_socket_api_client_closed();
           } else {
             // Successfully echoed to this socket
             ESP_LOGI(TAG, "[sock=%d]: Written %.*s", sock[i], len, rx_buffer);
@@ -185,6 +187,9 @@ error:
       close(sock[i]);
     }
   }
+
+  // The task is exiting, so no client can stop the motors any more
+  driver_socket_api_client_closed();
 
   free(address_info);
   vTaskDelete(NULL);
@@ -270,6 +275,10 @@ int try_receive(const char* tag, const int sock, uint8_t* data,
     log_socket_error(tag, sock, errno, "Error occurred during receiving");
     return -1;
   }
+  if (len == 0) {
+    ESP_LOGW(tag, "[sock=%d]: Connection closed by peer", sock);
+    return -2;  // recv() returns 0 only when the peer has closed
+  }
 
   return len;
 }
@@ -279,10 +288,13 @@ int socket_send(const char* tag, const int sock, const uint8_t* data,
   int to_write = len;
   while (to_write > 0) {
     int written = send(sock, data + (len - to_write), to_write, 0);
-    if (written < 0 && errno != EINPROGRESS && errno != EAGAIN &&
-        errno != EWOULDBLOCK) {
-      log_socket_error(tag, sock, errno, "Error occurred during sending");
-      return -1;
+    if (written < 0) {
+      if (errno != EINPROGRESS && errno != EAGAIN && errno != EWOULDBLOCK) {
+        log_socket_error(tag, sock, errno, "Error occurred during sending");
+        return -1;
+      }
+      vTaskDelay(1);  // Send buffer full, give lwIP a tick to drain it
+      continue;
     }
     to_write -= written;
   }

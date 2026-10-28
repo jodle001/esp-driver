@@ -190,3 +190,11 @@ esp_err_t driver_socket_api_process(uint8_t* buffer, size_t buffer_size) {
 
   return result;
 }
+
+void driver_socket_api_client_closed(void) {
+  ESP_LOGW(TAG, "Client disconnected, stopping motors");
+  s_pending_len = 0;
+  if (s_motor_interface.polar_pan_stop != NULL) {
+    s_motor_interface.polar_pan_stop();
+  }
+}

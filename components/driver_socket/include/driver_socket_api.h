@@ -53,7 +53,8 @@ typedef struct {
   int8_t delta_altitude; /** Requested change in altitude */
 } __attribute__((packed)) driver_socket_api_polar_pan_start_payload_t;
 
-/** Callback struct that allows the driver socket api to access motorhat motion commands */
+/** Callback struct that allows the driver socket api to access motorhat motion
+ * commands */
 typedef struct {
   esp_err_t (*polar_pan)(int16_t delta_azimuth, int16_t delta_altitude,
                          uint16_t delay_ms, uint16_t time_ms);
@@ -95,5 +96,11 @@ esp_err_t driver_socket_api_init(
  *          ESP_ERR_FAIL : Command execution failed (e.g., invalid parameters)
  */
 esp_err_t driver_socket_api_process(uint8_t* buffer, size_t buffer_size);
+
+/**
+ * @brief Call when a client socket closes. Stops all motors, since no one is
+ * left to send a stop, and discards any partially received frame.
+ */
+void driver_socket_api_client_closed(void);
 
 #endif  // _DRIVER_SOCKET_API_H_
