@@ -24,10 +24,11 @@ menu "Talos ESP Driver Configuration"
             I2C address for the MotorHAT device.
 
     config DRIVER_MOTORHAT_PAN_SPEED
-        string "MotorHAT Pan Speed"
-        default "0.8"
+        string "MotorHAT homing speed"
+        default "0.25"
         help
-            The fraction of PCA9685's max PWM speed to use when driving polar pan.
+            The fraction of PCA9685's max PWM speed used by homing. Polar pan
+            uses the per-axis speeds in the Axes menu.
 
     config DRIVER_ADS1015_ADDRESS
         hex "ADS1015 I2C Address"
@@ -122,6 +123,21 @@ menu "Axes"
         int "Altitude encoder channel B (P1) GPIO"
         range 0 39
         default 35
+
+    config DRIVER_AZIMUTH_PAN_SPEED
+        string "Azimuth pan speed (fraction of full PWM, 0 to 1)"
+        default "0.25"
+        help
+            Keep a stalled motor inside the TB6612's 1.0 A rating: speed no
+            higher than 1.0 A times the motor's winding resistance divided by
+            the 12 V supply. 0.25 is safe from about 3 ohms up.
+
+    config DRIVER_ALTITUDE_PAN_SPEED
+        string "Altitude pan speed (fraction of full PWM, 0 to 1)"
+        default "0.25"
+        help
+            Used for both wrist motors when the second altitude motor is
+            enabled. Same stall rule as the azimuth speed.
 
     config DRIVER_ALTITUDE_B_ENABLE
         bool "Drive altitude with a second motor (ER-4pc wrist pitch)"
@@ -222,23 +238,23 @@ menu "Soft Limits"
             default 20
         config DRIVER_SOFT_LIMITS_ALTITUDE_GEARBOX_RATIO
             string "Motor gearbox ratio (X:1)"
-            default "127.1"
+            default "65.5"
         config DRIVER_SOFT_LIMITS_ALTITUDE_PINION_TEETH
             int "Transmission pinion (motor side) teeth"
             range 1 1000
-            default 20
+            default 12
         config DRIVER_SOFT_LIMITS_ALTITUDE_DRIVEN_TEETH
             int "Transmission driven (joint side) teeth"
             range 1 1000
-            default 72
+            default 23
         config DRIVER_SOFT_LIMITS_ALTITUDE_RANGE_POS_DEG
             int "Physical travel from home, positive-count direction (deg)"
             range 0 360
-            default 6
+            default 45
         config DRIVER_SOFT_LIMITS_ALTITUDE_RANGE_NEG_DEG
             int "Physical travel from home, negative-count direction (deg)"
             range 0 360
-            default 6
+            default 45
         config DRIVER_SOFT_LIMITS_ALTITUDE_FWD_INCREASES
             int "FORWARD increases encoder count (1) or decreases it (0)"
             range 0 1

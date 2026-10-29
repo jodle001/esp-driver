@@ -75,6 +75,11 @@ esp_err_t motorhat_init(motorhat_handle_t* handle,
       ESP_LOGE(TAG, "Axis %d mapped to invalid motor %d", axis, motor + 1);
       return ESP_ERR_INVALID_ARG;
     }
+    if (config->axis_speed[axis] > PCA9685_PWM_MAX) {
+      ESP_LOGE(TAG, "Axis %d speed %d above the maximum %d", axis,
+               config->axis_speed[axis], PCA9685_PWM_MAX);
+      return ESP_ERR_INVALID_ARG;
+    }
     for (int other = MOTORHAT_AXIS_AZIMUTH; other < axis; other++) {
       if (config->axis_motor[other] == motor) {
         ESP_LOGE(TAG, "Axes %d and %d both mapped to motor %d", other, axis,
@@ -133,6 +138,7 @@ esp_err_t motorhat_init(motorhat_handle_t* handle,
     handle->forward_increases_count[axis] =
         config->forward_increases_count[axis];
     handle->axis_motor[axis] = config->axis_motor[axis];
+    handle->axis_speed[axis] = config->axis_speed[axis];
   }
   handle->soft_limit_poll_ms = config->soft_limit_poll_ms;
   handle->max_run_ms = config->max_run_ms;
@@ -472,7 +478,7 @@ static esp_err_t start_axes(
       continue;
     }
     esp_err_t err = motorhat_set_motor_speed(
-        s_handle, s_handle->axis_motor[axis], s_handle->polar_pan_speed);
+        s_handle, s_handle->axis_motor[axis], s_handle->axis_speed[axis]);
     if (err != ESP_OK) {
       return err;
     }

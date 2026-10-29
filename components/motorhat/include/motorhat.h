@@ -102,6 +102,7 @@ typedef struct {
   motorhat_motor_t axis_motor[MOTORHAT_NUM_AXES]; /**< Motor HAT port driving each axis, indexed by motorhat_axis_t */
   bool altitude_b_enabled; /**< Altitude commands also drive MOTORHAT_AXIS_ALTITUDE_B */
   bool altitude_b_reversed; /**< Drive ALTITUDE_B opposite to ALTITUDE (pitch on a differential wrist) */
+  uint16_t axis_speed[MOTORHAT_NUM_AXES]; /**< Polar pan PWM duty (0 to PCA9685_PWM_MAX) for each axis */
 } motorhat_config_t;
 
 /**
@@ -124,6 +125,7 @@ typedef struct {
   motorhat_motor_t axis_motor[MOTORHAT_NUM_AXES]; /**< Motor HAT port driving each axis, indexed by motorhat_axis_t */
   bool altitude_b_reversed; /**< Drive ALTITUDE_B opposite to ALTITUDE (pitch on a differential wrist) */
   int num_axes; /**< Axes in use, MOTORHAT_NUM_AXES with ALTITUDE_B enabled and one fewer without */
+  uint16_t axis_speed[MOTORHAT_NUM_AXES]; /**< Polar pan PWM duty (0 to PCA9685_PWM_MAX) for each axis */
 } motorhat_handle_t;
 
 /**

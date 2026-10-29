@@ -215,6 +215,16 @@ void app_main(void) {
               [MOTORHAT_AXIS_AZIMUTH] = CONFIG_DRIVER_AZIMUTH_MOTOR - 1,
               [MOTORHAT_AXIS_ALTITUDE] = CONFIG_DRIVER_ALTITUDE_MOTOR - 1,
           },
+      .axis_speed =
+          {
+              [MOTORHAT_AXIS_AZIMUTH] =
+                  PCA9685_PWM_MAX * atof(CONFIG_DRIVER_AZIMUTH_PAN_SPEED),
+              [MOTORHAT_AXIS_ALTITUDE] =
+                  PCA9685_PWM_MAX * atof(CONFIG_DRIVER_ALTITUDE_PAN_SPEED),
+              // The second wrist motor turns with the first, at the same speed
+              [MOTORHAT_AXIS_ALTITUDE_B] =
+                  PCA9685_PWM_MAX * atof(CONFIG_DRIVER_ALTITUDE_PAN_SPEED),
+          },
   };
 
 #ifdef CONFIG_DRIVER_ALTITUDE_B_ENABLE
