@@ -1,4 +1,5 @@
 menu "Talos ESP Driver Configuration"
+
     config DRIVER_MOTORHAT_SDA_PIN
         int "MotorHAT SDA Pin"
         default 21
@@ -30,20 +31,31 @@ menu "Talos ESP Driver Configuration"
             The fraction of PCA9685's max PWM speed used by homing. Polar pan
             uses the per-axis speeds in the Axes menu.
 
+    config DRIVER_CURRENT_SENSE_ENABLE
+        bool "Enable ADS1015 current sensing"
+        default y
+        help
+            Stop all motors when the ADS1015 reads overcurrent. Turn off only
+            to bring up motors before the current sensors are wired. With this
+            on, boot fails if no ADS1015 answers at the address below.
+
     config DRIVER_ADS1015_ADDRESS
         hex "ADS1015 I2C Address"
+        depends on DRIVER_CURRENT_SENSE_ENABLE
         default 0x4a
         help
             I2C address for the ADS1015 device.
 
     config DRIVER_ADS1015_RDY_PIN
         int "ADS1015 RDY Pin"
+        depends on DRIVER_CURRENT_SENSE_ENABLE
         default 18
         help
             GPIO pin number for the ADS1015 RDY line.
 
     config DRIVER_ADS1015_DATA_RATE
         int "ADS1015 Data Rate"
+        depends on DRIVER_CURRENT_SENSE_ENABLE
         range 0 6
         default 6
         help
@@ -94,6 +106,7 @@ menu "Talos ESP Driver Configuration"
 endmenu
 
 menu "Axes"
+
     config DRIVER_AZIMUTH_MOTOR
         int "Motor HAT port driving azimuth (base), 1-4 = M1-M4"
         range 1 4
@@ -179,6 +192,7 @@ menu "Axes"
 endmenu
 
 menu "Soft Limits"
+
     config DRIVER_SOFT_LIMITS_ENABLE
         bool "Enable encoder soft limits"
         default y
@@ -198,29 +212,36 @@ menu "Soft Limits"
         default 10
 
     menu "Azimuth axis"
+
         config DRIVER_SOFT_LIMITS_AZIMUTH_ENCODER_SLOTS
             int "Encoder wheel slots"
             range 1 1000
             default 20
+
         config DRIVER_SOFT_LIMITS_AZIMUTH_GEARBOX_RATIO
             string "Motor gearbox ratio (X:1)"
             default "127.1"
+
         config DRIVER_SOFT_LIMITS_AZIMUTH_PINION_TEETH
             int "Transmission pinion (motor side) teeth"
             range 1 1000
             default 24
+
         config DRIVER_SOFT_LIMITS_AZIMUTH_DRIVEN_TEETH
             int "Transmission driven (joint side) teeth"
             range 1 1000
             default 120
+
         config DRIVER_SOFT_LIMITS_AZIMUTH_RANGE_POS_DEG
             int "Physical travel from home, positive-count direction (deg)"
             range 0 360
             default 133
+
         config DRIVER_SOFT_LIMITS_AZIMUTH_RANGE_NEG_DEG
             int "Physical travel from home, negative-count direction (deg)"
             range 0 360
             default 133
+
         config DRIVER_SOFT_LIMITS_AZIMUTH_FWD_INCREASES
             int "FORWARD increases encoder count (1) or decreases it (0)"
             range 0 1
@@ -229,32 +250,40 @@ menu "Soft Limits"
                 PLACEHOLDER until bench tested. Set to 1 if driving this
                 axis's motor FORWARD makes its encoder count go up, 0 if it
                 makes the count go down.
+
     endmenu
 
     menu "Altitude axis"
+
         config DRIVER_SOFT_LIMITS_ALTITUDE_ENCODER_SLOTS
             int "Encoder wheel slots"
             range 1 1000
             default 20
+
         config DRIVER_SOFT_LIMITS_ALTITUDE_GEARBOX_RATIO
             string "Motor gearbox ratio (X:1)"
             default "65.5"
+
         config DRIVER_SOFT_LIMITS_ALTITUDE_PINION_TEETH
             int "Transmission pinion (motor side) teeth"
             range 1 1000
             default 12
+
         config DRIVER_SOFT_LIMITS_ALTITUDE_DRIVEN_TEETH
             int "Transmission driven (joint side) teeth"
             range 1 1000
             default 23
+
         config DRIVER_SOFT_LIMITS_ALTITUDE_RANGE_POS_DEG
             int "Physical travel from home, positive-count direction (deg)"
             range 0 360
             default 45
+
         config DRIVER_SOFT_LIMITS_ALTITUDE_RANGE_NEG_DEG
             int "Physical travel from home, negative-count direction (deg)"
             range 0 360
             default 45
+
         config DRIVER_SOFT_LIMITS_ALTITUDE_FWD_INCREASES
             int "FORWARD increases encoder count (1) or decreases it (0)"
             range 0 1
@@ -272,5 +301,7 @@ menu "Soft Limits"
             help
                 PLACEHOLDER until bench tested. The second altitude motor
                 uses the gearing and travel set above for altitude.
+
     endmenu
+
 endmenu

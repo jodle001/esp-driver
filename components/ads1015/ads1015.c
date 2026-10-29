@@ -28,11 +28,15 @@ void adc_task(void* arg) {
   uint16_t config_reg =
       handle->config_reg |
       (1 << ADS1015_OS_BIT);  // Modify so that writing will start conversions
-  bool mux_state =
-      true;  // Differential input to read (true = A2-A3, false = A0-A1)
+
+  // Input of the conversion in progress (0 = A0-A1, 1 = A2-A3), and how many
+  // samples in a row each input has been past a threshold
+  int input = 0;
+  int over_count[2] = {0, 0};
 
   ads1015_write_register(handle, ADS1015_CONFIG,
                          config_reg);  // Start conversions
+
   while (1) {
     // Wait until RDY interrupt fires
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -41,24 +45,35 @@ void adc_task(void* arg) {
     uint16_t raw;
     if (ads1015_read_register(handle, ADS1015_CONVERSION, &raw) == ESP_OK) {
       int16_t value = ((int16_t)raw) >> 4;
-      if (value >= CONFIG_ADS1015_HIGH_THRESH ||
-          value <= CONFIG_ADS1015_LOW_THRESH) {
-        ESP_LOGI(TAG, "Overcurrent detection fired");
+      bool over = value >= CONFIG_ADS1015_HIGH_THRESH ||
+                  value <= CONFIG_ADS1015_LOW_THRESH;
+      if (!over) {
+        over_count[input] = 0;
+      } else if (over_count[input] < CONFIG_ADS1015_TRIP_SAMPLES) {
+        over_count[input]++;
+        if (over_count[input] == CONFIG_ADS1015_TRIP_SAMPLES) {
+          ESP_LOGW(TAG, "Overcurrent on input %d", input);
+        }
+      }
+
+      // Keeps signalling while the input stays past the threshold
+      if (over_count[input] == CONFIG_ADS1015_TRIP_SAMPLES) {
         xEventGroupSetBits(g_motor_events, CURRENT_0);
       }
     }
 
     // Switch MUX inputs and start next conversion
+    input = !input;
     config_reg &= ~(0b111 << ADS1015_MUX_SHIFT);  // clear MUX bits
-    config_reg |= (mux_state ? (ADS1015_MUX_AIN0_AIN1 << ADS1015_MUX_SHIFT)
-                             : (ADS1015_MUX_AIN2_AIN3 << ADS1015_MUX_SHIFT));
-    mux_state = !mux_state;
+    config_reg |= (input ? (ADS1015_MUX_AIN2_AIN3 << ADS1015_MUX_SHIFT)
+                         : (ADS1015_MUX_AIN0_AIN1 << ADS1015_MUX_SHIFT));
 
     ads1015_write_register(handle, ADS1015_CONFIG, config_reg);
   }
 }
 
-esp_err_t ads1015_init(ads1015_handle_t* handle, const ads1015_config_t* config) {
+esp_err_t ads1015_init(ads1015_handle_t* handle,
+                       const ads1015_config_t* config) {
   if (handle == NULL || config == NULL) {
     return ESP_ERR_INVALID_ARG;
   }

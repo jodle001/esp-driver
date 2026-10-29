@@ -295,6 +295,7 @@ void app_main(void) {
 
   ESP_ERROR_CHECK(motorhat_init(&motorhat, &motorhat_config));
 
+#ifdef CONFIG_DRIVER_CURRENT_SENSE_ENABLE
   // Initialize current sensing
   ads1015_handle_t ads;
   ads1015_config_t ads_config = {
@@ -305,6 +306,9 @@ void app_main(void) {
       .adc_data_rate = CONFIG_DRIVER_ADS1015_DATA_RATE,
   };
   ESP_ERROR_CHECK(ads1015_init(&ads, &ads_config));
+#else
+  ESP_LOGW(TAG, "Current sensing disabled, overcurrent is not detected");
+#endif
 
   // Initialize Wi-Fi and socket connection
   driver_wifi_config_t wifi_config = {

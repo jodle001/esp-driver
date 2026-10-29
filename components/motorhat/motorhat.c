@@ -51,7 +51,16 @@ void motor_stop_task(void* args) {
 
     // Check for homing sequence before reacting
     if (!(xEventGroupGetBits(g_motor_events) & HOMING_FLAG)) {
+      // Stop once, then clear the bits so the next start command can run. The
+      // current sensor sets them again while the overcurrent lasts.
+      xSemaphoreTake(s_axis_lock, portMAX_DELAY);
       motorhat_emergency_stop(s_handle);
+      for (int axis = MOTORHAT_AXIS_AZIMUTH; axis < s_handle->num_axes;
+           axis++) {
+        s_axis_direction[axis] = MOTORHAT_DIRECTION_RELEASE;
+      }
+      xEventGroupClearBits(g_motor_events, CURRENT_ANY);
+      xSemaphoreGive(s_axis_lock);
     } else {
       // Homing sequence will handle this, yield and check again shortly
       vTaskDelay(pdMS_TO_TICKS(10));

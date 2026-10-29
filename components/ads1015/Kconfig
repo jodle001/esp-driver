@@ -4,12 +4,23 @@ menu "ADS1015 Configuration"
         int "ADS1015 HIGH THRESH"
         default 100
         help
-            High threshhold for ADS1015 current sensing.
+            High threshold for ADS1015 current sensing.
 
     config ADS1015_LOW_THRESH
         int "ADS1015 LOW THRESH"
         default -100
         help
-            Low threshhold for ADS1015 current sensing.
+            Low threshold for ADS1015 current sensing.
+
+    config ADS1015_TRIP_SAMPLES
+        int "Samples in a row past a threshold to stop the motors"
+        range 1 100
+        default 3
+        help
+            One input must read past the high or low threshold this many
+            times in a row before the motors stop, so a single noisy sample
+            does not stop them. The two inputs take turns: at 3300 SPS
+            (ADS1015) each is read about every 0.6 ms, at 475 SPS (ADS1115)
+            about every 4 ms.
 
 endmenu
