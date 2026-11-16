@@ -83,8 +83,9 @@ typedef struct {
   int range_neg_deg;
 } soft_limit_axis_params_t;
 
-static esp_err_t compute_soft_limit(const soft_limit_axis_params_t* params,
-                                    int percent, motorhat_soft_limit_t* limit) {
+// Encoder counts per degree of joint travel, from the motor's gearing
+static esp_err_t counts_per_degree(const soft_limit_axis_params_t* params,
+                                   double* counts_per_deg) {
   if (params->encoder_slots <= 0 || params->pinion_teeth <= 0 ||
       params->driven_teeth <= 0) {
     ESP_LOGE(TAG, "Soft limits %s: slots and teeth must be positive",
@@ -100,9 +101,19 @@ static esp_err_t compute_soft_limit(const soft_limit_axis_params_t* params,
     return ESP_ERR_INVALID_ARG;
   }
 
-  double counts_per_deg = (double)params->encoder_slots *
-                          ENCODER_COUNTS_PER_SLOT * gearbox *
-                          params->driven_teeth / params->pinion_teeth / 360.0;
+  *counts_per_deg = (double)params->encoder_slots * ENCODER_COUNTS_PER_SLOT *
+                    gearbox * params->driven_teeth / params->pinion_teeth /
+                    360.0;
+  return ESP_OK;
+}
+
+static esp_err_t compute_soft_limit(const soft_limit_axis_params_t* params,
+                                    int percent, motorhat_soft_limit_t* limit) {
+  double counts_per_deg = 0.0;
+  esp_err_t err = counts_per_degree(params, &counts_per_deg);
+  if (err != ESP_OK) {
+    return err;
+  }
   double fraction = percent / 100.0;
 
   // round each magnitude down so rounding can only shrink the bounds
@@ -184,6 +195,99 @@ static const char* const role_name[MOTORHAT_NUM_AXES] = {
     [MOTORHAT_AXIS_ALTITUDE] = "altitude",
     [MOTORHAT_AXIS_ALTITUDE_B] = "altitude B",
 };
+
+#ifdef CONFIG_DRIVER_CLOSED_LOOP_ENABLE
+// One joint's closed-loop settings from menuconfig, in degrees of the joint
+typedef struct {
+  const char* speed;      // jog speed, deg/s
+  const char* kv;         // deg/s per unit of duty above the deadband
+  const char* kp;         // duty per degree of error
+  const char* ki;         // duty per degree*s of error
+  const char* deadband;   // duty the motor needs to start moving
+  const char* max_error;  // degrees behind before a fault
+} closed_loop_setting_t;
+
+// Joint 0 is azimuth, joint 1 altitude (both wrist motors when paired)
+static const closed_loop_setting_t closed_loop_settings[2] = {
+    {CONFIG_DRIVER_CL_AZ_SPEED, CONFIG_DRIVER_CL_AZ_KV, CONFIG_DRIVER_CL_AZ_KP,
+     CONFIG_DRIVER_CL_AZ_KI, CONFIG_DRIVER_CL_AZ_DEADBAND,
+     CONFIG_DRIVER_CL_AZ_MAX_ERROR},
+    {CONFIG_DRIVER_CL_ALT_SPEED, CONFIG_DRIVER_CL_ALT_KV,
+     CONFIG_DRIVER_CL_ALT_KP, CONFIG_DRIVER_CL_ALT_KI,
+     CONFIG_DRIVER_CL_ALT_DEADBAND, CONFIG_DRIVER_CL_ALT_MAX_ERROR},
+};
+
+static int role_joint(int role) {
+  return role == MOTORHAT_AXIS_AZIMUTH ? 0 : 1;
+}
+
+// Fills config->servo from menuconfig. Degrees become counts with the gearing
+// of the motor picked for the joint's role, and each role's Pan speed becomes
+// its duty cap. Call after the soft limits are filled in: they become the
+// joints' position limits.
+static esp_err_t configure_closed_loop(motorhat_config_t* config) {
+  motorhat_servo_config_t* servo = &config->servo;
+  servo->enabled = true;
+  servo->period_ms = CONFIG_DRIVER_CL_PERIOD_MS;
+  servo->log_ms = CONFIG_DRIVER_CL_LOG_MS;
+
+  for (int j = 0; j < 2; j++) {
+    const closed_loop_setting_t* s = &closed_loop_settings[j];
+    int role = j == 0 ? MOTORHAT_AXIS_AZIMUTH : MOTORHAT_AXIS_ALTITUDE;
+    double cpd = 0.0;
+    esp_err_t err =
+        counts_per_degree(&motor_settings[role_motor_id[role]].limits, &cpd);
+    if (err != ESP_OK) {
+      return err;
+    }
+    double speed = atof(s->speed) * cpd;
+    double kv = atof(s->kv) * cpd;
+    servo->joint[j] = (servo_joint_params_t){
+        .jog_speed = (float)speed,
+        .accel = (float)(speed * 1000.0 / CONFIG_DRIVER_CL_ACCEL_MS),
+        .kff = kv > 0.0 ? (float)(1.0 / kv) : 0.0f,
+        .kp = (float)(atof(s->kp) / cpd),
+        .ki = (float)(atof(s->ki) / cpd),
+        .max_error = (float)(atof(s->max_error) * cpd),
+        .fault_s = CONFIG_DRIVER_CL_FAULT_MS / 1000.0f,
+        .stall_counts = (float)(atof(CONFIG_DRIVER_CL_STALL_DEG) * cpd),
+        .hold_s = CONFIG_DRIVER_CL_HOLD_MS / 1000.0f,
+        .hold_window = (float)(atof(CONFIG_DRIVER_CL_HOLD_WINDOW_DEG) * cpd),
+        .max_pair = (float)(atof(CONFIG_DRIVER_CL_PAIR_DEG) * cpd),
+    };
+  }
+
+  for (int r = 0; r < NUM_ROLES; r++) {
+    const motor_setting_t* m = &motor_settings[role_motor_id[r]];
+    // + joint motion drives the motor FORWARD (BACKWARD for a reversed
+    // altitude B); the sign says which way that moves its count
+    int sign = m->forward_increases_count ? 1 : -1;
+#ifdef CONFIG_DRIVER_ALTITUDE_B_REVERSED
+    if (r == MOTORHAT_AXIS_ALTITUDE_B) {
+      sign = -sign;
+    }
+#endif
+    config->forward_increases_count[r] = m->forward_increases_count;
+    servo->motor[r] = (servo_motor_params_t){
+        .sign = sign,
+        .max_duty = (float)atof(m->speed),
+        .deadband = (float)atof(closed_loop_settings[role_joint(r)].deadband),
+    };
+
+#ifdef CONFIG_DRIVER_SOFT_LIMITS_ENABLE
+    // A joint may go only as far as every one of its motors may
+    const motorhat_soft_limit_t* lim = &config->soft_limits[r];
+    float lo = (float)(sign > 0 ? lim->min_count : -lim->max_count);
+    float hi = (float)(sign > 0 ? lim->max_count : -lim->min_count);
+    servo_joint_params_t* p = &servo->joint[role_joint(r)];
+    p->min_pos = p->limited ? fmaxf(p->min_pos, lo) : lo;
+    p->max_pos = p->limited ? fminf(p->max_pos, hi) : hi;
+    p->limited = true;
+#endif
+  }
+  return ESP_OK;
+}
+#endif
 
 #ifdef CONFIG_DRIVER_CURRENT_SENSING_ENABLE
 typedef struct {
@@ -497,6 +601,10 @@ void app_main(void) {
 
 #else
   ESP_LOGW(TAG, "Soft limits disabled, motors are not bounded");
+#endif
+
+#ifdef CONFIG_DRIVER_CLOSED_LOOP_ENABLE
+  ESP_ERROR_CHECK(configure_closed_loop(&motorhat_config));
 #endif
 
   ESP_ERROR_CHECK(motorhat_init(&motorhat, &motorhat_config));

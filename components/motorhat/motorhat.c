@@ -1,4 +1,5 @@
 #include "motorhat.h"
+#include "motorhat_servo.h"
 
 #include <inttypes.h>
 
@@ -67,6 +68,7 @@ void motor_stop_task(void* args) {
       // current sensor sets them again while the overcurrent lasts.
       xSemaphoreTake(s_axis_lock, portMAX_DELAY);
       motorhat_emergency_stop(s_handle);
+      motorhat_servo_halt();
       for (int axis = MOTORHAT_AXIS_AZIMUTH; axis < s_handle->num_axes;
            axis++) {
         s_axis_direction[axis] = MOTORHAT_DIRECTION_RELEASE;
@@ -186,6 +188,7 @@ esp_err_t motorhat_init(motorhat_handle_t* handle,
   handle->num_axes = num_axes;
   handle->num_hats = config->num_hats;
   handle->num_motors = num_motors;
+  handle->servo_enabled = config->servo.enabled;
 
   // Each init forces that HAT's outputs off first, so a motor left running
   // through an ESP32 reset stops on every HAT
@@ -206,8 +209,14 @@ esp_err_t motorhat_init(motorhat_handle_t* handle,
   // Started after every PCA9685 is ready; it may emergency stop at once.
   xTaskCreate(motor_stop_task, "motor_stop_task", 4096, handle, 8, NULL);
 
-  // Watches moving axes for soft limits and the max run time
-  if (handle->soft_limits_enabled || handle->max_run_ms > 0) {
+  // The closed loop does soft limits and the max run time itself
+  if (handle->servo_enabled) {
+    esp_err_t err = motorhat_servo_init(handle, &config->servo);
+    if (err != ESP_OK) {
+      return err;
+    }
+  } else if (handle->soft_limits_enabled || handle->max_run_ms > 0) {
+    // Watches moving axes for soft limits and the max run time
     if (xTaskCreate(soft_limit_monitor_task, "soft_limit_task", 4096, NULL, 9,
                     NULL) != pdPASS) {
       return ESP_ERR_NO_MEM;
@@ -564,6 +573,11 @@ esp_err_t motorhat_polar_pan_start(int8_t delta_azimuth,
       "Received polar pan start command: delta_azimuth=%d, delta_altitude=%d",
       delta_azimuth, delta_altitude);
 
+  if (s_handle->servo_enabled) {
+    motorhat_servo_start(delta_azimuth, delta_altitude);
+    return ESP_OK;
+  }
+
   motorhat_direction_t directions[MOTORHAT_NUM_AXES] = {
       [MOTORHAT_AXIS_AZIMUTH] = delta_to_direction(delta_azimuth),
       [MOTORHAT_AXIS_ALTITUDE] = delta_to_direction(delta_altitude),
@@ -590,6 +604,11 @@ esp_err_t motorhat_polar_pan_stop(void) {
   if (s_handle == NULL) return ESP_ERR_INVALID_STATE;
 
   ESP_LOGI(TAG, "Received polar pan stop command");
+
+  if (s_handle->servo_enabled) {
+    motorhat_servo_stop();
+    return ESP_OK;
+  }
 
   xSemaphoreTake(s_axis_lock, portMAX_DELAY);
   for (int m = MOTORHAT_MOTOR1; m < s_handle->num_motors; m++) {
