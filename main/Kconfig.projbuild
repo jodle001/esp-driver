@@ -507,12 +507,12 @@ menu "Talos ESP Driver Configuration"
     config DRIVER_MAX_RUN_MS
         int "Longest a pan may run without a new start command (ms)"
         range 0 60000
-        default 3000
+        default 5000
         help
             An axis driven longer than this since the last polar pan start
             command is stopped. Commander's auto tracking repeats the start
-            command every 100 ms; a manual key press sends it once. 0 turns
-            the check off.
+            command every 100 ms; a manual key press sends it once, so a held
+            jog ends here. 0 turns the check off.
 
     config DRIVER_HOMING_ENABLE
         bool "Allow the home command"
@@ -558,11 +558,14 @@ menu "Motors"
 
         config DRIVER_MOTOR_AXIS1_SPEED
             string "Pan speed (fraction of full PWM, 0 to 1)"
-            default "0.25"
+            default "0.6"
             help
                 Keep a stalled motor inside the TB6612's 1.0 A rating: speed no
                 higher than 1.0 A times the motor's winding resistance divided by
-                the 12 V supply. 0.25 is safe from about 3 ohms up.
+                the 12 V supply. 0.6 is safe from about 7.2 ohms up; Bluey's base
+                motor has not been measured. With closed loop on this is a cap:
+                the base jogs at 6 degrees/s using 0.35 to 0.44 (Nov 16 2026),
+                and a stall is stopped within CL_FAULT_MS.
 
         config DRIVER_MOTOR_AXIS1_ENCODER_SLOTS
             int "Encoder wheel slots"
@@ -803,7 +806,7 @@ menu "Motors"
 
         config DRIVER_MOTOR_AXIS4_SPEED
             string "Pan speed (fraction of full PWM, 0 to 1)"
-            default "0.5"
+            default "0.65"
             help
                 Keep a stalled motor inside the TB6612's 1.0 A rating: speed no
                 higher than 1.0 A times the motor's winding resistance divided by
@@ -885,7 +888,7 @@ menu "Motors"
 
         config DRIVER_MOTOR_AXIS5_SPEED
             string "Pan speed (fraction of full PWM, 0 to 1)"
-            default "0.5"
+            default "0.65"
             help
                 Keep a stalled motor inside the TB6612's 1.0 A rating: speed no
                 higher than 1.0 A times the motor's winding resistance divided by
@@ -1153,7 +1156,7 @@ endmenu
 menu "Closed Loop Jog"
     config DRIVER_CLOSED_LOOP_ENABLE
         bool "Drive polar pan with encoder feedback"
-        default n
+        default y
         help
             Off: a polar pan start drives each motor at its fixed Pan speed
             until the stop. On: each joint follows a speed reference with
@@ -1218,15 +1221,16 @@ menu "Closed Loop Jog"
     config DRIVER_CL_AZ_SPEED
         string "Azimuth jog speed (degrees/s)"
         depends on DRIVER_CLOSED_LOOP_ENABLE
-        default "2"
+        default "6"
         help
             Must stay below what the base reaches at its Pan speed: about
-            2.9 degrees/s at 0.25 (bench, Nov 16 2026).
+            2.9 degrees/s at 0.25; 6 degrees/s takes 0.35 to 0.44 of the 0.6
+            cap (Bluey, Nov 16 2026).
 
     config DRIVER_CL_AZ_KV
         string "Azimuth speed per unit of duty above the deadband (degrees/s)"
         depends on DRIVER_CLOSED_LOOP_ENABLE
-        default "18"
+        default "20"
 
     config DRIVER_CL_AZ_KP
         string "Azimuth proportional gain (duty per degree)"
@@ -1251,10 +1255,13 @@ menu "Closed Loop Jog"
     config DRIVER_CL_ALT_SPEED
         string "Altitude jog speed (degrees/s)"
         depends on DRIVER_CLOSED_LOOP_ENABLE
-        default "20"
+        default "8"
         help
             Must stay below what the slower wrist motor reaches at its Pan
-            speed: about 30 degrees/s at 0.5 (bench, Nov 16 2026).
+            speed: about 30 degrees/s at 0.5 (bench, Nov 16 2026). PiVision
+            sees the image about 0.35 s late, so a fast wrist overshoots the
+            target: 20 degrees/s swung back and forth while tracking, 8
+            settles (Bluey, Nov 16 2026).
 
     config DRIVER_CL_ALT_KV
         string "Altitude speed per unit of duty above the deadband (degrees/s)"
