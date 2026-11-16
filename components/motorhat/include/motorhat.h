@@ -8,6 +8,7 @@
 #include "freertos/event_groups.h"
 #include "driver/gpio.h"
 #include "pca9685.h"
+#include "servo.h"
 
 #define DEFAULT_FREQUENCY_HZ 1526.0f
 
@@ -96,6 +97,21 @@ typedef struct {
 } motorhat_motor_channels_t;
 
 /**
+ * @brief Closed-loop jog settings (servo.h)
+ *
+ * joint[0] is azimuth and joint[1] altitude; motor[] is indexed by
+ * motorhat_axis_t. With ALTITUDE_B enabled both wrist motors follow the
+ * altitude joint.
+ */
+typedef struct {
+  bool enabled; /**< Polar pan start and stop drive the closed loop instead of a fixed PWM */
+  uint32_t period_ms; /**< Control period */
+  uint32_t log_ms; /**< Debug log period, 0 turns the log off */
+  servo_joint_params_t joint[2]; /**< Azimuth, altitude */
+  servo_motor_params_t motor[MOTORHAT_NUM_AXES]; /**< Per axis, indexed by motorhat_axis_t */
+} motorhat_servo_config_t;
+
+/**
  * @brief Motor HAT configuration structure
  */
 typedef struct {
@@ -118,6 +134,7 @@ typedef struct {
   bool altitude_b_enabled; /**< Altitude commands also drive MOTORHAT_AXIS_ALTITUDE_B */
   bool altitude_b_reversed; /**< Drive ALTITUDE_B opposite to ALTITUDE (pitch on a differential wrist) */
   uint16_t axis_speed[MOTORHAT_NUM_AXES]; /**< Polar pan PWM duty (0 to PCA9685_PWM_MAX) for each axis */
+  motorhat_servo_config_t servo; /**< Closed-loop jog, used when servo.enabled */
 } motorhat_config_t;
 
 /**
@@ -144,6 +161,7 @@ typedef struct {
   bool altitude_b_reversed; /**< Drive ALTITUDE_B opposite to ALTITUDE (pitch on a differential wrist) */
   int num_axes; /**< Axes in use, MOTORHAT_NUM_AXES with ALTITUDE_B enabled and one fewer without */
   uint16_t axis_speed[MOTORHAT_NUM_AXES]; /**< Polar pan PWM duty (0 to PCA9685_PWM_MAX) for each axis */
+  bool servo_enabled; /**< Polar pan goes to the closed loop (motorhat_servo.c) */
 } motorhat_handle_t;
 
 /**

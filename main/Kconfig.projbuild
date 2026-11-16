@@ -1149,3 +1149,135 @@ menu "Soft Limits"
 
         comment "Gearing and travel for each motor are in the Motors menu"
 endmenu
+
+menu "Closed Loop Jog"
+    config DRIVER_CLOSED_LOOP_ENABLE
+        bool "Drive polar pan with encoder feedback"
+        default n
+        help
+            Off: a polar pan start drives each motor at its fixed Pan speed
+            until the stop. On: each joint follows a speed reference with
+            encoder feedback, like the Eshed controller's manual jog. Both
+            wrist motors follow one pitch reference so the wrist does not
+            roll, a stop ramps down and holds, and a motor that cannot keep
+            up stops everything. Each motor's Pan speed becomes its duty cap.
+
+    config DRIVER_CL_PERIOD_MS
+        int "Control period (ms)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        range 10 100
+        default 10
+        help
+            One FreeRTOS tick is 10 ms at CONFIG_FREERTOS_HZ=100.
+
+    config DRIVER_CL_ACCEL_MS
+        int "Time to reach jog speed (ms)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        range 10 2000
+        default 200
+
+    config DRIVER_CL_HOLD_MS
+        int "Hold position after a stop before braking (ms)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        range 0 60000
+        default 2000
+        help
+            Once a stopped joint is on target for this long its motors brake.
+            0 holds with the motors forever.
+
+    config DRIVER_CL_FAULT_MS
+        int "Fault after a motor is behind or stalled this long (ms)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        range 50 2000
+        default 300
+
+    config DRIVER_CL_HOLD_WINDOW_DEG
+        string "On-target band (degrees)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "0.3"
+
+    config DRIVER_CL_STALL_DEG
+        string "Least travel per fault time when driven near the cap (degrees)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "0.36"
+
+    config DRIVER_CL_PAIR_DEG
+        string "Two wrist motors further apart than this fault (degrees)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "2.9"
+
+    config DRIVER_CL_LOG_MS
+        int "Debug log period (ms)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        range 0 10000
+        default 200
+        help
+            While a joint is active, logs its reference and each motor's
+            count, error and duty this often. 0 turns the log off.
+
+    config DRIVER_CL_AZ_SPEED
+        string "Azimuth jog speed (degrees/s)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "2"
+        help
+            Must stay below what the base reaches at its Pan speed: about
+            2.9 degrees/s at 0.25 (bench, Nov 16 2026).
+
+    config DRIVER_CL_AZ_KV
+        string "Azimuth speed per unit of duty above the deadband (degrees/s)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "18"
+
+    config DRIVER_CL_AZ_KP
+        string "Azimuth proportional gain (duty per degree)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "0.9"
+
+    config DRIVER_CL_AZ_KI
+        string "Azimuth integral gain (duty per degree*s)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "2.7"
+
+    config DRIVER_CL_AZ_DEADBAND
+        string "Azimuth duty needed to start moving"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "0.1"
+
+    config DRIVER_CL_AZ_MAX_ERROR
+        string "Azimuth following error limit (degrees)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "2"
+
+    config DRIVER_CL_ALT_SPEED
+        string "Altitude jog speed (degrees/s)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "20"
+        help
+            Must stay below what the slower wrist motor reaches at its Pan
+            speed: about 30 degrees/s at 0.5 (bench, Nov 16 2026).
+
+    config DRIVER_CL_ALT_KV
+        string "Altitude speed per unit of duty above the deadband (degrees/s)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "147"
+
+    config DRIVER_CL_ALT_KP
+        string "Altitude proportional gain (duty per degree)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "0.112"
+
+    config DRIVER_CL_ALT_KI
+        string "Altitude integral gain (duty per degree*s)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "0.335"
+
+    config DRIVER_CL_ALT_DEADBAND
+        string "Altitude duty needed to start moving"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "0.25"
+
+    config DRIVER_CL_ALT_MAX_ERROR
+        string "Altitude following error limit (degrees)"
+        depends on DRIVER_CLOSED_LOOP_ENABLE
+        default "3.6"
+endmenu
