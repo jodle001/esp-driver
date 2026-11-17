@@ -16,12 +16,17 @@
 #define PI_LINK_RX_BUFFER_SIZE 256  // Driver needs more than the 128 byte FIFO
 #define PI_LINK_LINE_MAX 64         // ACL_CMD_SIZE in operator acl.hpp
 #define PI_LINK_READ_TIMEOUT_MS 10  // erv sends manual keys every 10 ms
-#define PI_LINK_KEY_TIMEOUT_MS 100  // Stop if erv's 10 ms key repeat stops
+// Stop if erv's key repeat stops. A plain jog repeats every 10 ms, a tracking
+// jog (TrackingJog in operator api.hpp) every interval_ms, a uint8_t, so 255 ms
+// at most. erv stops with ~ itself, so this only catches a lost link
+#define PI_LINK_KEY_TIMEOUT_MS 300
 #define PI_LINK_RESTART_MS 250  // Repeat start below CONFIG_DRIVER_MAX_RUN_MS
 
 #define ACL_MANUAL_TOGGLE '~'
 #define ACL_XON 0x11   // The Pi's tty uses XON/XOFF flow control (ixon ixoff)
 #define ACL_XOFF 0x13
+#define ACL_PROMPT '>'
+#define ACL_CTRL_C 0x03  // erv aborts a LISTPV reply with Ctrl-C
 
 static pi_link_config_t s_config;
 static bool s_manual_mode = false;
@@ -36,6 +41,15 @@ static volatile bool s_homing = false;  // Cleared by home_task when done
 static void reply(const char* text) {
   if (!s_config.debug_reply) return;
   uart_write_bytes(PI_LINK_UART, text, strlen(text));
+}
+
+// erv sends its next queued command, and enters manual mode, only after the
+// controller's > prompt (Scorbot::poll in operator erv.cpp). Like the ER-V
+// controller, prompt after every command line, after leaving manual mode,
+// after Ctrl-C and at boot
+static void prompt(void) {
+  const char p = ACL_PROMPT;
+  uart_write_bytes(PI_LINK_UART, &p, 1);
 }
 
 // Manual mode keys erv can send (ACL_Manual_Axis in operator acl_private.hpp).
@@ -94,6 +108,7 @@ static void handle_manual_toggle(void) {
   // Nothing should be moving on entering or leaving manual mode
   stop_motion();
   reply(s_manual_mode ? "manual on\r\n" : "manual off\r\n");
+  if (!s_manual_mode) prompt();
 }
 
 static void handle_manual_key(uint8_t key) {
@@ -137,29 +152,35 @@ static void check_key_timeout(void) {
 static void home_task(void* arg) {
   s_config.motor.home(0);
   s_homing = false;
+  prompt();  // HOME's prompt comes when homing is over, as on the ER-V
   vTaskDelete(NULL);
 }
 
-static void start_homing(void) {
-  if (s_homing) return;
+// Returns true when home_task will send the prompt
+static bool start_homing(void) {
+  if (s_homing) return true;
   stop_motion();
   s_homing = true;
   if (xTaskCreate(home_task, "pi_link_home", 4096, NULL, 5, NULL) != pdPASS) {
     s_homing = false;
   }
+  return s_homing;
 }
 
-static void handle_line(const char* line) {
+// Returns true when the prompt should be sent now
+static bool handle_line(const char* line) {
   char text[PI_LINK_LINE_MAX + 16];
   snprintf(text, sizeof(text), "line [%s]\r\n", line);
   reply(text);
 
-  // Exact matches only. HERE, DEFP, SHIFT and MOVE are ignored until relative moves exist (motorhat_polar_pan is a TODO)
+  // Exact matches only. Anything else (HERE, DEFP, SHIFT, MOVE, LISTPV, CON,
+  // SPEED) only gets a prompt until relative moves exist (motorhat_polar_pan is a TODO)
   if (strcmp(line, "HOME") == 0) {
-    start_homing();
+    return !start_homing();
   } else if (strcmp(line, "clrbuf") == 0) {
     stop_motion();
   }
+  return true;
 }
 
 static void reset_line(void) {
@@ -170,6 +191,12 @@ static void reset_line(void) {
 static void handle_byte(uint8_t byte) {
   // Flow control from the Pi, not part of any command
   if (byte == ACL_XON || byte == ACL_XOFF) return;
+
+  if (byte == ACL_CTRL_C) {
+    reset_line();
+    if (!s_manual_mode) prompt();
+    return;
+  }
 
   if (byte == ACL_MANUAL_TOGGLE) {
     reset_line();  // erv only sends ~ between whole commands
@@ -191,11 +218,15 @@ static void handle_byte(uint8_t byte) {
   }
 
   if (byte == '\r' || byte == '\n') {
+    // A bare CR gets a prompt (erv sends one at start up); a bare LF doesn't,
+    // so a CR LF from a terminal is one prompt
+    bool prompt_now = byte == '\r' || s_line_len > 0;
     if (s_line_len > 0 && !s_line_bad) {
       s_line[s_line_len] = '\0';
-      handle_line(s_line);
+      prompt_now = handle_line(s_line);
     }
     reset_line();
+    if (prompt_now) prompt();
     return;
   }
 
@@ -262,6 +293,9 @@ esp_err_t pi_link_init(const pi_link_config_t* config) {
   // stops included, so tell the Pi to resume
   const char xon = ACL_XON;
   if (uart_write_bytes(PI_LINK_UART, &xon, 1) < 0) return ESP_FAIL;
+
+  // An erv that started before this board is waiting for a prompt
+  prompt();
 
   if (xTaskCreate(pi_link_task, "pi_link_task", 4096, NULL, 5, NULL) !=
       pdPASS) {
