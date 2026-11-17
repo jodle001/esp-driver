@@ -159,6 +159,12 @@ bool servo_joint_update(servo_joint_t* j, const int32_t counts[], float dt,
         p->kff * (float)mp->sign * j->v_ref + p->kp * e + p->ki * m->integral;
     if (hold_still) {
       u = 0.0f;
+    } else if (moving) {
+      // While the reference moves, friction opposes the direction of travel,
+      // so the offset follows the reference, not u: at low jog speeds the
+      // feedforward is small and PI corrections flip u's sign, and a
+      // deadband step on every flip rattles the motor
+      u += copysignf(mp->deadband, (float)mp->sign * j->v_ref);
     } else if (u != 0.0f) {
       u += copysignf(mp->deadband, u);
     }
