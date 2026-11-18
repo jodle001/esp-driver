@@ -43,10 +43,13 @@ scenarios (boot, ping/info, enable rules, watchdog, homing from both sides of th
 and again from on the switch, timeouts, soft limits, overcurrent, ClearFault semantics,
 reboot, calibration validation, invert and encoder_invert) plus the hardware-only ones
 (driver FLT line, motor power loss = e-stop, calibration required before Enable, events
-before responses with no seq gaps). `core_sim` puts that core behind a pseudo terminal so
+before responses with no seq gaps, and the encoder 5 V sense: its debounce, a loss while
+ready, active, homing and during an e-stop fault, and the three advisory flags). `core_sim` puts that core behind a pseudo terminal so
 `scorbot_protocol_cli --port /tmp/scorbot_core ping | info | home | monitor 3` and
 `robot.launch.py mock:=false serial_port:=/tmp/scorbot_core` talk to the real firmware
-logic. Type `power off` on its stdin to press the e-stop, `fault driver 2` to inject.
+logic. Type `power off` on its stdin to press the e-stop, `enc5v off` to take the
+encoders' supply away (`enc5v on` turns the sense on with the supply present), `fault
+driver 2` to inject.
 
 `test_acl` drives `scorbot_core/acl` the way the operator does, bytes in and text out:
 the prompt rules, the start-up DEFP/HOME/HERE (the prompt only after the homing cycle),
@@ -88,6 +91,16 @@ and switches when the first bytes are not text. The dialect's per-joint sign is
 to the NVS calibration, which is pushed once over the protobuf link
 (`scorbot_protocol_cli`, in protobuf or auto mode) before the operator is used. The
 status pixels (`SC_PIXEL_GPIO`) are not driven yet.
+
+The encoder 5 V sense ("Encoder 5 V sense" in menuconfig; IO48 and IO38 on the rev 0.5
+board) is read every control tick. With the PC supply off and the Pi still plugged in, the
+DevKit runs on USB power while the encoders are dark, so the counts stop and the arm can
+be moved unseen. Positions are trusted only while the two pins read (1, 0): three samples
+of anything else clear every homed flag, fault a running or homing arm with `ENCODER`,
+and refuse Enable and Home until the pins have read (1, 0) for 100 ms; Enable then stays
+refused until Home has completed. The verdict and three advisories (both pins low, the
+channels disagreeing for 5 s, a rail hovering at the threshold) are logged on the console.
+Over the Eshed dialect a refusal reads `CONTROL DISABLED (encoder 5 V supply ...)`.
 
 Bench acceptance, in the order of the design doc
 (`project_documentation/technical/ros2/esp_controller_design.md` section 4.4):

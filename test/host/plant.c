@@ -54,6 +54,9 @@ void plant_init(plant_t *p, uint8_t joint_count, const scorbot_v1_JointCalibrati
     p->joint_count = joint_count;
     p->motor_power = true;
     p->motor_power_valid = true;
+    p->enc_supply_valid = false;
+    p->enc_supply_h = true;
+    p->enc_supply_l = false;
     for (uint8_t i = 0; i < joint_count; ++i) {
         plant_joint_t *j = &p->joint[i];
         j->cal = cal ? cal[i] : plant_default_calibration(i);
@@ -83,6 +86,9 @@ void plant_read(plant_t *p, sc_input_t *in)
     memset(in, 0, sizeof(*in));
     in->motor_power = p->motor_power;
     in->motor_power_valid = p->motor_power_valid;
+    in->enc_supply_valid = p->enc_supply_valid;
+    in->enc_supply_h = p->enc_supply_h;
+    in->enc_supply_l = p->enc_supply_l;
     for (uint8_t i = 0; i < p->joint_count; ++i) {
         plant_joint_t *j = &p->joint[i];
         in->joint[i].counts = j->counts;

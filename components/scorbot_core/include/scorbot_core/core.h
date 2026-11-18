@@ -38,6 +38,14 @@ typedef struct {
     float ki;  /* integral on velocity error, per second */
 } sc_gains_t;
 
+/// The encoder 5 V sense (design doc 8.3). The board reads the encoders' supply on two
+/// channels of opposite polarity; positions are trusted only while both say "present".
+typedef enum {
+    SC_ENC_SUPPLY_UNKNOWN = 0, /* boot, or no sense on this build: no verdict yet */
+    SC_ENC_SUPPLY_PRESENT,     /* (H, L) = (1, 0), held for the return time */
+    SC_ENC_SUPPLY_LOST,        /* absent or the two channels disagree */
+} sc_enc_supply_t;
+
 /// Callbacks the core uses to persist what must survive a reboot. NULL = not persisted.
 typedef struct {
     void *ctx;
@@ -77,6 +85,13 @@ typedef struct {
                                             over this (the fuse and the rail copper see the sum, not
                                             the per-joint limits) and back up while it is under */
     sc_gains_t gains[SC_CORE_MAX_JOINTS];
+
+    /* encoder 5 V sense, counted in control ticks (1 kHz); used only while the glue
+       reports the two pins (sc_input_t.enc_supply_valid) */
+    uint16_t enc_loss_samples;           /* 3: consecutive samples that are not "present" -> lost */
+    uint16_t enc_return_samples;         /* 100: consecutive "present" samples -> present again */
+    float enc_settle_s;                  /* 0.050: after the first sample, before any verdict */
+    float enc_disagree_s;                /* 5.0: the channels disagreeing this long sets enc_disagree */
 } sc_core_config_t;
 
 /// What the glue measured for one joint since the last tick.
@@ -93,6 +108,9 @@ typedef struct {
     sc_joint_input_t joint[SC_CORE_MAX_JOINTS];
     bool motor_power_valid;  /* the rail is measured (VSENSE present) */
     bool motor_power;        /* the 12 V motor rail is up (e-stop closed) */
+    bool enc_supply_valid;   /* the two encoder 5 V sense pins are read (false: the rule is off) */
+    bool enc_supply_h;       /* channel H pin level: 1 = present */
+    bool enc_supply_l;       /* channel L pin level: 0 = present */
 } sc_input_t;
 
 typedef struct {
@@ -165,6 +183,22 @@ typedef struct {
     bool first_tick;
     bool motor_power_seen;
     float current_scale;          /* velocity-demand factor of the summed-current cap, 1.0 when idle */
+    /* encoder 5 V sense */
+    sc_enc_supply_t enc_supply;
+    bool enc_seen;                /* the glue reports the pins: the rule is in force */
+    uint16_t enc_good_run;        /* consecutive "present" samples */
+    uint16_t enc_bad_run;         /* consecutive samples that are not "present" */
+    uint8_t enc_low_run;          /* consecutive (0, 0) samples */
+    uint8_t enc_last_pattern;     /* (H << 1) | L of the previous sample */
+    uint16_t enc_changes;         /* pattern changes in the current one-second window, drives on */
+    float enc_elapsed_s;          /* since the first sample */
+    float enc_disagree_run_s;     /* how long the two channels have disagreed */
+    float enc_window_s;
+    uint32_t enc_losses;          /* times a present supply was lost since boot */
+    bool enc_rehome;              /* a loss happened: Enable is refused until Home has completed */
+    bool enc_stuck_low;           /* advisory, latched: (0, 0) seen after the settle time */
+    bool enc_disagree;            /* advisory, latched: disagreement longer than enc_disagree_s */
+    bool enc_marginal;            /* advisory, latched: four or more pattern changes in a second */
     /* outbound ring */
     scorbot_v1_Envelope outbound[SC_CORE_OUTBOUND];
     uint8_t out_head, out_count;
@@ -195,6 +229,7 @@ uint8_t sc_core_outbound_count(const sc_core_t *core);
 void sc_core_raise_fault(sc_core_t *core, scorbot_v1_FaultCode code, int joint, bool trusted);
 
 /* ---- names, shared with the console ------------------------------------------------- */
+const char *sc_enc_supply_name(sc_enc_supply_t s);
 const char *sc_state_name(scorbot_v1_SystemState s);
 const char *sc_fault_name(scorbot_v1_FaultCode f);
 

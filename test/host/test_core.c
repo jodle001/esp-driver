@@ -838,6 +838,254 @@ static void test_total_current_cap_scales_every_duty(void)
     MT_CHECK(state(&h) == scorbot_v1_SystemState_SYSTEM_STATE_ACTIVE, "no fault after lifting the cap (%s)", sc_fault_name(h.core.fault));
 }
 
+/* ---- the encoder 5 V sense (design doc 8.3) ------------------------------------------ */
+
+static void enc_pins(harness_t *h, bool h_pin, bool l_pin)
+{
+    h->plant.enc_supply_valid = true;
+    h->plant.enc_supply_h = h_pin;
+    h->plant.enc_supply_l = l_pin;
+}
+#define enc_present(h) enc_pins((h), true, false)
+#define enc_absent(h) enc_pins((h), false, true)
+
+static void test_enc_supply_rule_is_off_without_the_sense(void)
+{
+    harness_t h;
+    harness_init(&h, NULL); /* the plant does not report the pins */
+    boot(&h);
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_UNKNOWN);
+    MT_FALSE(h.core.enc_seen);
+    MT_EQ(req_home(&h, 0, 0).result, scorbot_v1_Result_RESULT_OK);
+    run(&h, 15.0);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_READY);
+    MT_EQ(req_enable(&h, false).result, scorbot_v1_Result_RESULT_OK);
+}
+
+static void test_enc_supply_must_be_present_to_home_and_enable(void)
+{
+    harness_t h;
+    harness_init(&h, NULL);
+    enc_absent(&h); /* PC supply off, the Pi powers the DevKit */
+    boot(&h);
+    run(&h, 0.1);
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_LOST);
+    MT_EQ(h.core.enc_losses, 0); /* never present since boot: not a loss */
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_UNHOMED);
+    MT_EQ(req_home(&h, 0, 0).result, scorbot_v1_Result_RESULT_INVALID_STATE);
+    MT_EQ(req_enable(&h, true).result, scorbot_v1_Result_RESULT_INVALID_STATE);
+    /* The supply comes up: refused until it has been present for the return time. */
+    enc_present(&h);
+    run(&h, 0.099);
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_LOST);
+    MT_EQ(req_home(&h, 0, 0).result, scorbot_v1_Result_RESULT_INVALID_STATE);
+    run(&h, 0.001);
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_PRESENT);
+    /* Nothing was lost, so an unhomed Enable is allowed as after any boot. */
+    MT_EQ(req_enable(&h, true).result, scorbot_v1_Result_RESULT_OK);
+    MT_EQ(req_disable(&h).result, scorbot_v1_Result_RESULT_OK);
+    MT_EQ(req_home(&h, 0, 0).result, scorbot_v1_Result_RESULT_OK);
+    run(&h, 15.0);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_READY);
+    MT_EQ(req_enable(&h, false).result, scorbot_v1_Result_RESULT_OK);
+}
+
+static void test_enc_supply_no_verdict_before_the_pins_settle(void)
+{
+    harness_t h;
+    harness_init(&h, NULL);
+    enc_absent(&h);
+    run(&h, 0.049); /* three bad samples came long ago, but the settle time has not passed */
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_UNKNOWN);
+    MT_EQ(h.core.enc_losses, 0);
+    run(&h, 0.002);
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_LOST);
+}
+
+static void test_enc_supply_loss_while_ready_unhomes_without_a_fault(void)
+{
+    harness_t h;
+    harness_init(&h, NULL);
+    enc_present(&h);
+    boot(&h);
+    run(&h, 0.1);
+    MT_EQ(req_home(&h, 0, 0).result, scorbot_v1_Result_RESULT_OK);
+    run(&h, 15.0);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_READY);
+    enc_absent(&h);
+    run(&h, 0.002); /* two samples: inside the debounce */
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_READY);
+    MT_TRUE(cj(&h, 0)->homed);
+    run(&h, 0.001); /* the third */
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_LOST);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_UNHOMED);
+    MT_EQ(h.core.fault, scorbot_v1_FaultCode_FAULT_NONE);
+    for (int i = 0; i < N; ++i) {
+        MT_FALSE(cj(&h, i)->homed);
+    }
+    /* Back, and stable: Enable stays refused until Home has completed again. */
+    enc_present(&h);
+    run(&h, 0.2);
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_PRESENT);
+    MT_EQ(req_enable(&h, false).result, scorbot_v1_Result_RESULT_INVALID_STATE);
+    MT_EQ(req_enable(&h, true).result, scorbot_v1_Result_RESULT_INVALID_STATE); /* not even unhomed */
+    MT_TRUE(h.core.enc_rehome);
+    MT_EQ(req_home(&h, 0, 0).result, scorbot_v1_Result_RESULT_OK);
+    run(&h, 15.0);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_READY);
+    MT_FALSE(h.core.enc_rehome);
+    MT_EQ(req_enable(&h, false).result, scorbot_v1_Result_RESULT_OK);
+}
+
+static void test_enc_supply_loss_while_active_faults_and_loses_positions(void)
+{
+    harness_t h;
+    harness_init(&h, NULL);
+    enc_present(&h);
+    boot(&h);
+    run(&h, 0.1);
+    req_home(&h, 0, 0);
+    run(&h, 15.0);
+    req_enable(&h, false);
+    run_commanding(&h, 0.2, 0, scorbot_v1_ControlMode_CONTROL_MODE_VELOCITY, 0.1f);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_ACTIVE);
+    enc_absent(&h);
+    run(&h, 0.003);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_FAULT);
+    MT_EQ(h.core.fault, scorbot_v1_FaultCode_FAULT_ENCODER);
+    MT_TRUE(saw_event(&h, scorbot_v1_Event_fault_raised_tag, scorbot_v1_FaultCode_FAULT_ENCODER, 0));
+    sc_input_t in;
+    sc_output_t out;
+    plant_read(&h.plant, &in);
+    sc_core_tick(&h.core, 0.001f, &in, &out);
+    drain(&h);
+    MT_FALSE(out.drives_enabled);
+    MT_EQ(req_clear(&h).result, scorbot_v1_Result_RESULT_OK);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_UNHOMED);
+    MT_FALSE(cj(&h, 0)->homed);
+    MT_EQ(req_home(&h, 0, 0).result, scorbot_v1_Result_RESULT_INVALID_STATE); /* still absent */
+    MT_EQ(req_enable(&h, true).result, scorbot_v1_Result_RESULT_INVALID_STATE);
+}
+
+static void test_enc_supply_loss_during_homing_faults(void)
+{
+    harness_t h;
+    harness_init(&h, NULL);
+    enc_present(&h);
+    boot(&h);
+    run(&h, 0.1);
+    req_home(&h, 0, 0);
+    run(&h, 0.5);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_HOMING);
+    enc_absent(&h);
+    run(&h, 0.003);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_FAULT);
+    MT_EQ(h.core.fault, scorbot_v1_FaultCode_FAULT_ENCODER);
+}
+
+static void test_enc_supply_loss_during_an_estop_fault_still_loses_positions(void)
+{
+    harness_t h;
+    harness_init(&h, NULL);
+    enc_present(&h);
+    boot(&h);
+    run(&h, 0.1);
+    req_home(&h, 0, 0);
+    run(&h, 15.0);
+    req_enable(&h, false);
+    run_commanding(&h, 0.1, 0, scorbot_v1_ControlMode_CONTROL_MODE_VELOCITY, 0.1f);
+    h.plant.motor_power = false; /* the e-stop: positions would survive this fault */
+    run(&h, 0.01);
+    MT_EQ(h.core.fault, scorbot_v1_FaultCode_FAULT_DRIVER);
+    enc_absent(&h);              /* then the whole supply goes */
+    run(&h, 0.01);
+    h.plant.motor_power = true;
+    enc_present(&h);
+    run(&h, 0.2);
+    MT_EQ(req_clear(&h).result, scorbot_v1_Result_RESULT_OK);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_UNHOMED);
+}
+
+static void test_enc_supply_debounce(void)
+{
+    harness_t h;
+    harness_init(&h, NULL);
+    enc_present(&h);
+    boot(&h);
+    run(&h, 0.1);
+    req_home(&h, 0, 0);
+    run(&h, 15.0);
+    /* A glitch of two samples is not a loss. */
+    enc_absent(&h);
+    run(&h, 0.002);
+    enc_present(&h);
+    run(&h, 0.05);
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_PRESENT);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_READY);
+    MT_EQ(h.core.enc_losses, 0);
+    /* The return count restarts on any sample that is not "present". */
+    enc_absent(&h);
+    run(&h, 0.01);
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_LOST);
+    enc_present(&h);
+    run(&h, 0.099);
+    enc_absent(&h);
+    run(&h, 0.001);
+    enc_present(&h);
+    run(&h, 0.099);
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_LOST);
+    run(&h, 0.001);
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_PRESENT);
+}
+
+static void test_enc_supply_disagreement_is_a_loss_and_is_flagged(void)
+{
+    harness_t h;
+    harness_init(&h, NULL);
+    enc_present(&h);
+    boot(&h);
+    run(&h, 0.1);
+    req_home(&h, 0, 0);
+    run(&h, 15.0);
+    enc_pins(&h, true, true); /* H says present, L says absent */
+    run(&h, 0.003);
+    MT_EQ(h.core.enc_supply, SC_ENC_SUPPLY_LOST);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_UNHOMED);
+    MT_FALSE(h.core.enc_disagree);
+    run(&h, 5.1);
+    MT_TRUE(h.core.enc_disagree);
+    MT_FALSE(h.core.enc_stuck_low);
+    enc_pins(&h, false, false); /* both low: the comparator channel stuck */
+    run(&h, 0.001);
+    MT_FALSE(h.core.enc_stuck_low);
+    run(&h, 0.001);
+    MT_TRUE(h.core.enc_stuck_low);
+}
+
+static void test_enc_supply_marginal_rail_is_flagged(void)
+{
+    harness_t h;
+    harness_init(&h, NULL);
+    enc_present(&h);
+    boot(&h);
+    run(&h, 0.1);
+    req_home(&h, 0, 0);
+    run(&h, 15.0);
+    req_enable(&h, false);
+    /* One-sample dips, never three in a row: no loss, but the rail is hovering. */
+    for (int k = 0; k < 6; ++k) {
+        command(&h, 0, scorbot_v1_ControlMode_CONTROL_MODE_VELOCITY, 0.0f);
+        enc_absent(&h);
+        run(&h, 0.001);
+        enc_present(&h);
+        run(&h, 0.099);
+    }
+    run_commanding(&h, 1.0, 0, scorbot_v1_ControlMode_CONTROL_MODE_VELOCITY, 0.0f);
+    MT_EQ(state(&h), scorbot_v1_SystemState_SYSTEM_STATE_ACTIVE);
+    MT_EQ(h.core.enc_losses, 0);
+    MT_TRUE(h.core.enc_marginal);
+}
+
 int main(void)
 {
     MT_RUN(test_boots_into_unhomed_and_streams_state);
@@ -866,5 +1114,15 @@ int main(void)
     MT_RUN(test_enable_requires_calibration_on_the_device);
     MT_RUN(test_events_precede_responses_without_seq_gaps);
     MT_RUN(test_total_current_cap_scales_every_duty);
+    MT_RUN(test_enc_supply_rule_is_off_without_the_sense);
+    MT_RUN(test_enc_supply_must_be_present_to_home_and_enable);
+    MT_RUN(test_enc_supply_no_verdict_before_the_pins_settle);
+    MT_RUN(test_enc_supply_loss_while_ready_unhomes_without_a_fault);
+    MT_RUN(test_enc_supply_loss_while_active_faults_and_loses_positions);
+    MT_RUN(test_enc_supply_loss_during_homing_faults);
+    MT_RUN(test_enc_supply_loss_during_an_estop_fault_still_loses_positions);
+    MT_RUN(test_enc_supply_debounce);
+    MT_RUN(test_enc_supply_disagreement_is_a_loss_and_is_flagged);
+    MT_RUN(test_enc_supply_marginal_rail_is_flagged);
     return MT_SUMMARY();
 }

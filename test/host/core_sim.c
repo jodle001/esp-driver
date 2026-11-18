@@ -154,10 +154,11 @@ static scorbot_v1_FaultCode parse_fault(const char *s)
 
 static void print_status(const app_t *a)
 {
-    printf("state=%s fault=%s boot=%u wd=%ums rx_cmd=%u ign=%u | link=%s rx=%lu tx=%lu tx_err=%lu power=%s\n",
+    printf("state=%s fault=%s boot=%u wd=%ums rx_cmd=%u ign=%u | link=%s rx=%lu tx=%lu tx_err=%lu power=%s enc5v=%s\n",
            sc_state_name(a->core.state), sc_fault_name(a->core.fault), a->cfg.boot_count, a->core.watchdog_ms,
            a->core.commands_received, a->core.commands_ignored, mode_name(a->mode), a->rx_frames, a->tx_frames,
-           a->tx_errors, a->plant.motor_power ? "on" : "OFF");
+           a->tx_errors, a->plant.motor_power ? "on" : "OFF",
+           a->plant.enc_supply_valid ? sc_enc_supply_name(a->core.enc_supply) : "not sensed");
     if (a->mode == SC_LINK_ACL) {
         printf("  acl: lines=%u unknown=%u prompts=%u jog_bytes=%u manual=%d moving=%d speed=%u%% target=",
                a->acl.lines, a->acl.unknown_lines, a->acl.prompts, a->acl.jog_bytes, a->acl.manual, a->acl.moving,
@@ -197,6 +198,21 @@ static bool handle_command(app_t *a, char *line)
         const char *arg = strtok(NULL, " \t\r\n");
         a->plant.motor_power = !(arg && strcmp(arg, "off") == 0);
         printf("motor power %s\n", a->plant.motor_power ? "on" : "off");
+    } else if (strcmp(cmd, "enc5v") == 0) {
+        /* The encoder 5 V sense: the two pins as the board would drive them. */
+        const char *arg = strtok(NULL, " \t\r\n");
+        a->plant.enc_supply_valid = true;
+        if (arg && strcmp(arg, "off") == 0) {
+            a->plant.enc_supply_h = false;
+            a->plant.enc_supply_l = true;
+        } else if (arg && strcmp(arg, "disagree") == 0) {
+            a->plant.enc_supply_h = true;
+            a->plant.enc_supply_l = true;
+        } else {
+            a->plant.enc_supply_h = true;
+            a->plant.enc_supply_l = false;
+        }
+        printf("encoder 5 V sense: H=%d L=%d\n", a->plant.enc_supply_h, a->plant.enc_supply_l);
     } else if (strcmp(cmd, "fault") == 0) {
         const char *name = strtok(NULL, " \t\r\n");
         const char *joint = strtok(NULL, " \t\r\n");
@@ -208,7 +224,7 @@ static bool handle_command(app_t *a, char *line)
             printf("injected %s\n", sc_fault_name(code));
         }
     } else {
-        printf("commands: status | power on|off | fault <name> [joint] | reboot | quit\n");
+        printf("commands: status | power on|off | enc5v on|off|disagree | fault <name> [joint] | reboot | quit\n");
     }
     fflush(stdout);
     return true;

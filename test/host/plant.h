@@ -37,6 +37,10 @@ typedef struct {
     uint8_t joint_count;
     bool motor_power;
     bool motor_power_valid;
+    /* the encoder 5 V sense pins; not reported unless a test turns the sense on */
+    bool enc_supply_valid;
+    bool enc_supply_h;        /* 1 = present */
+    bool enc_supply_l;        /* 0 = present */
 } plant_t;
 
 /// Scorbot-like default calibration for joint index (matches scorbot_esp_sim).

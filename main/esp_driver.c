@@ -15,6 +15,9 @@
 //   link_rx (core 0): UART bytes -> stream buffer for the control task
 //   limit_switch (core 0): INT -> read the counters (the latch), then which input moved
 //   current (core 0): ADS1015 round-robin
+//
+// The encoder 5 V sense (two GPIO inputs, design doc 8.3) is read in the control tick:
+// when the encoders lose their supply the core stops trusting every position.
 #include <string.h>
 
 #include "current.h"
@@ -128,6 +131,49 @@ static void on_link_bytes(const uint8_t *buf, size_t n)
     }
 }
 
+/* ---- the encoder 5 V sense -------------------------------------------------------- */
+
+#ifdef CONFIG_SC_ENC_SENSE
+/* Inputs only, never outputs or routed to a peripheral. Channel H has its divider on the
+   board (no pull); channel L is an open collector, pulled up on the board and here. */
+static void enc_sense_init(void)
+{
+    const gpio_config_t h = {.pin_bit_mask = 1ULL << CONFIG_SC_ENC_SENSE_H_GPIO, .mode = GPIO_MODE_INPUT,
+                             .pull_up_en = GPIO_PULLUP_DISABLE, .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                             .intr_type = GPIO_INTR_DISABLE};
+    const gpio_config_t l = {.pin_bit_mask = 1ULL << CONFIG_SC_ENC_SENSE_L_GPIO, .mode = GPIO_MODE_INPUT,
+                             .pull_up_en = GPIO_PULLUP_ENABLE, .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                             .intr_type = GPIO_INTR_DISABLE};
+    ESP_ERROR_CHECK(gpio_config(&h));
+    ESP_ERROR_CHECK(gpio_config(&l));
+}
+
+/* On the console, once per change: the verdict, and each advisory the first time it is set. */
+static void enc_sense_report(const sc_input_t *in)
+{
+    static sc_enc_supply_t last = SC_ENC_SUPPLY_UNKNOWN;
+    static bool stuck_low, disagree, marginal;
+    if (s_core.enc_supply != last) {
+        last = s_core.enc_supply;
+        ESP_LOGW(TAG, "encoder 5 V: %s (H=%d L=%d, lost %lu times since boot)", sc_enc_supply_name(last), in->enc_supply_h,
+                 in->enc_supply_l, (unsigned long)s_core.enc_losses);
+    }
+    if (s_core.enc_stuck_low && !stuck_low) {
+        stuck_low = true;
+        ESP_LOGW(TAG, "encoder 5 V sense: both pins read low (ENC_SENSE_STUCK_LOW): check the comparator channel");
+    }
+    if (s_core.enc_disagree && !disagree) {
+        disagree = true;
+        ESP_LOGW(TAG, "encoder 5 V sense: the two channels have disagreed for %d ms (ENC_SENSE_DISAGREE)",
+                 CONFIG_SC_ENC_SENSE_DISAGREE_MS);
+    }
+    if (s_core.enc_marginal && !marginal) {
+        marginal = true;
+        ESP_LOGW(TAG, "encoder 5 V sense: four or more changes within a second with the drives on: marginal 5 V");
+    }
+}
+#endif
+
 /* ---- control loop -------------------------------------------------------------- */
 
 static void IRAM_ATTR on_timer(void *arg)
@@ -185,6 +231,11 @@ static void control_task(void *arg)
         }
         in.motor_power_valid = !cur.bus_error;
         in.motor_power = cur.rail_ok;
+#ifdef CONFIG_SC_ENC_SENSE
+        in.enc_supply_valid = true;
+        in.enc_supply_h = gpio_get_level(CONFIG_SC_ENC_SENSE_H_GPIO) != 0;
+        in.enc_supply_l = gpio_get_level(CONFIG_SC_ENC_SENSE_L_GPIO) != 0;
+#endif
         if (sw.bus_error || cur.bus_error) {
             if (++bus_error_ticks == 50) { /* 50 ms of a dead I2C bus: the drivers are blind */
                 sc_core_raise_fault(&s_core, scorbot_v1_FaultCode_FAULT_DRIVER, -1, false);
@@ -194,6 +245,9 @@ static void control_task(void *arg)
         }
 
         sc_core_tick(&s_core, dt, &in, &out);
+#ifdef CONFIG_SC_ENC_SENSE
+        enc_sense_report(&in);
+#endif
 
         /* Outputs. */
         if (motor_apply(&s_motor, out.duty, out.brake, out.drives_enabled) != ESP_OK) {
@@ -225,6 +279,9 @@ static void control_task(void *arg)
 
 void app_main(void)
 {
+#ifdef CONFIG_SC_ENC_SENSE
+    enc_sense_init(); /* first: these two pins are never anything but inputs */
+#endif
     ESP_ERROR_CHECK(gpio_install_isr_service(0));
 
     /* Persisted state first: boot count, robot type, calibration. */
@@ -246,6 +303,12 @@ void app_main(void)
     s_cfg.watchdog_ms = CONFIG_SC_WATCHDOG_MS;
     s_cfg.require_calibration = true;
     s_cfg.total_current_limit_a = CONFIG_SC_TOTAL_CURRENT_LIMIT_DA / 10.0f;
+#ifdef CONFIG_SC_ENC_SENSE
+    s_cfg.enc_loss_samples = CONFIG_SC_ENC_SENSE_LOSS_SAMPLES;
+    s_cfg.enc_return_samples = CONFIG_SC_ENC_SENSE_RETURN_SAMPLES;
+    s_cfg.enc_settle_s = CONFIG_SC_ENC_SENSE_SETTLE_MS / 1000.0f;
+    s_cfg.enc_disagree_s = CONFIG_SC_ENC_SENSE_DISAGREE_MS / 1000.0f;
+#endif
     sc_core_init(&s_core, &s_cfg);
 
     /* The Eshed dialect on top of the core: virtual ER-V counts, sign per joint from Kconfig. */

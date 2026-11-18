@@ -47,6 +47,12 @@ static bool positions_trusted(const sc_core_t *core)
     return true;
 }
 
+/* The encoder 5 V sense refuses Enable and Home while it is in force and not "present". */
+static bool enc_supply_blocks(const sc_core_t *core)
+{
+    return core->enc_seen && core->enc_supply != SC_ENC_SUPPLY_PRESENT;
+}
+
 static sc_gains_t effective_gains(const sc_core_t *core, uint8_t i)
 {
     sc_gains_t g = core->cfg.gains[i];
@@ -223,6 +229,10 @@ void sc_core_config_default(sc_core_config_t *cfg)
     cfg->backoff_margin_rad = 0.02f;
     cfg->state_period_s = 0.010f;
     cfg->boot_delay_s = 0.050f;
+    cfg->enc_loss_samples = 3;
+    cfg->enc_return_samples = 100;
+    cfg->enc_settle_s = 0.050f;
+    cfg->enc_disagree_s = 5.0f;
     cfg->hard_stop_current_fraction = 0.9f;
     cfg->hard_stop_ms = 50;
     cfg->overcurrent_ms = 30;
@@ -244,6 +254,10 @@ void sc_core_init(sc_core_t *core, const sc_core_config_t *cfg)
     if (core->cfg.overcurrent_ms == 0) core->cfg.overcurrent_ms = 30;
     if (core->cfg.soft_limit_overrun_rad <= 0.0f) core->cfg.soft_limit_overrun_rad = 0.05f;
     if (core->cfg.home_timeout_ms == 0) core->cfg.home_timeout_ms = 30000;
+    if (core->cfg.enc_loss_samples == 0) core->cfg.enc_loss_samples = 3;
+    if (core->cfg.enc_return_samples == 0) core->cfg.enc_return_samples = 100;
+    if (core->cfg.enc_settle_s <= 0.0f) core->cfg.enc_settle_s = 0.050f;
+    if (core->cfg.enc_disagree_s <= 0.0f) core->cfg.enc_disagree_s = 5.0f;
     core->joint_count = cfg->joint_count > SC_CORE_MAX_JOINTS ? SC_CORE_MAX_JOINTS : cfg->joint_count;
     for (uint8_t i = 0; i < core->joint_count; ++i) {
         sc_joint_t *j = &core->joint[i];
@@ -332,6 +346,10 @@ static scorbot_v1_Result do_home(sc_core_t *core, uint32_t mask, uint32_t timeou
         *msg = "motor power is off";
         return scorbot_v1_Result_RESULT_INVALID_STATE;
     }
+    if (enc_supply_blocks(core)) {
+        *msg = "encoder 5 V supply is not present";
+        return scorbot_v1_Result_RESULT_INVALID_STATE;
+    }
     core->homing_mask = mask;
     core->homed_progress_mask = 0;
     core->homing_elapsed_s = 0.0f;
@@ -385,6 +403,14 @@ static scorbot_v1_Result do_enable(sc_core_t *core, bool allow_unhomed, const ch
     }
     if (core->motor_power_seen) {
         *msg = "motor power is off (e-stop?)";
+        return scorbot_v1_Result_RESULT_INVALID_STATE;
+    }
+    if (enc_supply_blocks(core)) {
+        *msg = "encoder 5 V supply is not present";
+        return scorbot_v1_Result_RESULT_INVALID_STATE;
+    }
+    if (core->enc_rehome) {
+        *msg = "encoder 5 V supply was lost: home first";
         return scorbot_v1_Result_RESULT_INVALID_STATE;
     }
     core->unhomed_active = core->state == scorbot_v1_SystemState_SYSTEM_STATE_UNHOMED;
@@ -791,6 +817,110 @@ static void step_joints(sc_core_t *core, float dt, const sc_input_t *in, sc_outp
     }
 }
 
+/* ---- encoder 5 V sense (design doc 8.3) -------------------------------------------
+   With the PC supply off and the Pi still plugged in, the DevKit and the counters stay
+   powered over USB while the encoders go dark: the counts freeze and the arm can be
+   moved without the firmware seeing it. Two pins of opposite polarity read the encoders'
+   5 V: (H, L) = (1, 0) present, (0, 1) absent, anything else a disagreement, which
+   counts as a loss. Positions are trusted only while "present" has been stable. */
+
+static void enc_supply_lost(sc_core_t *core)
+{
+    core->enc_supply = SC_ENC_SUPPLY_LOST;
+    ++core->enc_losses;
+    core->enc_rehome = true; /* until Home completes, also for an unhomed Enable */
+    for (uint8_t i = 0; i < core->joint_count; ++i) {
+        core->joint[i].homed = false;
+    }
+    if (drives_enabled(core)) {
+        /* The position loop is blind: stop. FAULT_ENCODER does not keep positions, so
+           ClearFault lands in UNHOMED. */
+        sc_core_raise_fault(core, scorbot_v1_FaultCode_FAULT_ENCODER, -1, false);
+    } else if (core->state == scorbot_v1_SystemState_SYSTEM_STATE_READY) {
+        enter_state(core, scorbot_v1_SystemState_SYSTEM_STATE_UNHOMED);
+    }
+}
+
+static void step_enc_supply(sc_core_t *core, float dt, const sc_input_t *in)
+{
+    if (!in->enc_supply_valid) {
+        return; /* no sense on this build: no verdict, nothing refused */
+    }
+    const sc_core_config_t *c = &core->cfg;
+    const uint16_t loss_n = c->enc_loss_samples;
+    const uint16_t return_n = c->enc_return_samples;
+    const uint8_t pattern = (uint8_t)((in->enc_supply_h ? 2u : 0u) | (in->enc_supply_l ? 1u : 0u));
+    const bool present = pattern == 2u;                 /* H = 1, L = 0 */
+    const bool disagree = pattern == 3u || pattern == 0u;
+
+    if (!core->enc_seen) {
+        core->enc_seen = true;
+        core->enc_last_pattern = pattern;
+    }
+    core->enc_elapsed_s += dt;
+    const bool settled = core->enc_elapsed_s >= c->enc_settle_s;
+
+    if (present) {
+        core->enc_bad_run = 0;
+        if (core->enc_good_run < UINT16_MAX) {
+            ++core->enc_good_run;
+        }
+    } else {
+        core->enc_good_run = 0;
+        if (core->enc_bad_run < UINT16_MAX) {
+            ++core->enc_bad_run;
+        }
+    }
+
+    /* Advisories for the console; none of them changes the verdict below. */
+    core->enc_low_run = pattern == 0u ? (uint8_t)(core->enc_low_run < UINT8_MAX ? core->enc_low_run + 1 : UINT8_MAX) : 0;
+    if (settled && core->enc_low_run >= 2) {
+        core->enc_stuck_low = true;
+    }
+    core->enc_disagree_run_s = disagree ? core->enc_disagree_run_s + dt : 0.0f;
+    if (core->enc_disagree_run_s > c->enc_disagree_s) {
+        core->enc_disagree = true;
+    }
+    if (pattern != core->enc_last_pattern && drives_enabled(core)) {
+        ++core->enc_changes;
+    }
+    core->enc_last_pattern = pattern;
+    core->enc_window_s += dt;
+    if (core->enc_window_s >= 1.0f) {
+        if (core->enc_changes >= 4) {
+            core->enc_marginal = true; /* a 5 V rail hovering at the threshold */
+        }
+        core->enc_changes = 0;
+        core->enc_window_s = 0.0f;
+    }
+
+    switch (core->enc_supply) {
+    case SC_ENC_SUPPLY_PRESENT:
+        if (core->enc_bad_run >= loss_n) {
+            enc_supply_lost(core);
+        }
+        break;
+    case SC_ENC_SUPPLY_LOST:
+        if (core->enc_good_run >= return_n) {
+            core->enc_supply = SC_ENC_SUPPLY_PRESENT; /* the joints stay unhomed: Home is next */
+        }
+        break;
+    default: /* UNKNOWN: no verdict until the pins have settled */
+        if (!settled) {
+            break;
+        }
+        if (core->enc_good_run >= return_n) {
+            core->enc_supply = SC_ENC_SUPPLY_PRESENT;
+        } else if (core->enc_bad_run >= loss_n) {
+            core->enc_supply = SC_ENC_SUPPLY_LOST; /* never present since boot: nothing was trusted */
+        }
+        break;
+    }
+    if (core->enc_rehome && positions_trusted(core)) {
+        core->enc_rehome = false; /* every joint homed again */
+    }
+}
+
 /* ---- tick ----------------------------------------------------------------------- */
 
 void sc_core_tick(sc_core_t *core, float dt, const sc_input_t *in, sc_output_t *out)
@@ -820,6 +950,9 @@ void sc_core_tick(sc_core_t *core, float dt, const sc_input_t *in, sc_output_t *
     if (core->motor_power_seen && drives_enabled(core)) {
         sc_core_raise_fault(core, scorbot_v1_FaultCode_FAULT_DRIVER, -1, true);
     }
+
+    /* The encoders' own supply: lost means every position is stale. */
+    step_enc_supply(core, dt, in);
 
     if (core->state == scorbot_v1_SystemState_SYSTEM_STATE_BOOT) {
         core->boot_elapsed_s += dt;
@@ -860,6 +993,15 @@ void sc_core_tick(sc_core_t *core, float dt, const sc_input_t *in, sc_output_t *
 }
 
 /* ---- names ---------------------------------------------------------------------- */
+
+const char *sc_enc_supply_name(sc_enc_supply_t s)
+{
+    switch (s) {
+    case SC_ENC_SUPPLY_PRESENT: return "PRESENT";
+    case SC_ENC_SUPPLY_LOST: return "LOST";
+    default: return "UNKNOWN";
+    }
+}
 
 const char *sc_state_name(scorbot_v1_SystemState s)
 {

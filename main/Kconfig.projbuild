@@ -231,6 +231,53 @@ menu "Talos ESP Driver Configuration"
             default 90
     endmenu
 
+    menu "Encoder 5 V sense"
+        config SC_ENC_SENSE
+            bool "Read the encoder 5 V sense pins"
+            default y
+            help
+                The board reads the encoders' 5 V supply on two pins of opposite polarity
+                (design doc 8.3). With the PC supply off and the Pi still plugged in, the
+                DevKit keeps running on USB power while the encoders go dark. The firmware
+                then stops trusting every position: the homed flags are cleared, a running
+                arm faults, and Enable and Home are refused until the supply has been
+                present again for the return time. Turn this off only for a DevKit on the
+                bench with no board under it.
+        config SC_ENC_SENSE_H_GPIO
+            int "Channel H GPIO (present = high, no pull)"
+            depends on SC_ENC_SENSE
+            default 48
+            help
+                IO48 on the rev 0.5 board. Rev 0.4, which was never ordered, had it on
+                IO36. Never IO35, IO36 or IO37 on an R8 module: they are its PSRAM bus.
+        config SC_ENC_SENSE_L_GPIO
+            int "Channel L GPIO (present = low, internal pull-up)"
+            depends on SC_ENC_SENSE
+            default 38
+            help
+                IO38 on the rev 0.5 board (IO37 on rev 0.4).
+        config SC_ENC_SENSE_LOSS_SAMPLES
+            int "Loss: consecutive 1 kHz samples that are not 'present'"
+            depends on SC_ENC_SENSE
+            range 1 1000
+            default 3
+        config SC_ENC_SENSE_RETURN_SAMPLES
+            int "Return: consecutive 'present' samples"
+            depends on SC_ENC_SENSE
+            range 1 60000
+            default 100
+        config SC_ENC_SENSE_SETTLE_MS
+            int "Settle time after boot before the first verdict (ms)"
+            depends on SC_ENC_SENSE
+            range 1 5000
+            default 50
+        config SC_ENC_SENSE_DISAGREE_MS
+            int "Report the two channels disagreeing for longer than (ms)"
+            depends on SC_ENC_SENSE
+            range 100 60000
+            default 5000
+    endmenu
+
     config SC_PIXEL_GPIO
         int "Status pixel chain data GPIO (RMT; driver not written yet)"
         default 21
