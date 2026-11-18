@@ -15,6 +15,7 @@
 //   link_rx (core 0): UART bytes -> stream buffer for the control task
 //   limit_switch (core 0): INT -> read the counters (the latch), then which input moved
 //   current (core 0): ADS1015 round-robin
+//   pixels (core 0): sends the status pixel frames the control task hands over
 //
 // The encoder 5 V sense (two GPIO inputs, design doc 8.3) is read in the control tick:
 // when the encoders lose their supply the core stops trusting every position.
@@ -33,9 +34,11 @@
 #include "link_uart.h"
 #include "motor.h"
 #include "nvs_store.h"
+#include "pixel_strip.h"
 #include "scorbot_core/acl.h"
 #include "scorbot_core/core.h"
 #include "scorbot_core/link_mode.h"
+#include "scorbot_core/pixels.h"
 #include "scorbot_proto/framing.h"
 #include "sdkconfig.h"
 
@@ -64,6 +67,13 @@ static expander_t s_expander_dir, s_expander_sense;
 static motor_t s_motor;
 static TaskHandle_t s_control_task;
 static int64_t s_last_tick_us;
+static bool s_self_test_failed;
+static bool s_link_seen;
+static int64_t s_link_last_us;
+#ifdef CONFIG_SC_PIXELS
+static sc_pixels_t s_pixels;
+#define PIXEL_PERIOD_S 0.020f /* 50 frames a second */
+#endif
 
 /* ---- persistence hooks --------------------------------------------------------- */
 
@@ -96,6 +106,8 @@ static void on_payload(void *ctx, const uint8_t *payload, size_t n)
 static void on_link_bytes(const uint8_t *buf, size_t n)
 {
     size_t k = 0;
+    s_link_seen = true;
+    s_link_last_us = esp_timer_get_time();
     if (s_mode == SC_LINK_UNDECIDED) {
         /* Auto mode. The first bytes decide; a 921600 stream read at 9600 shows up as
            framing errors long before it shows a delimiter. */
@@ -174,6 +186,40 @@ static void enc_sense_report(const sc_input_t *in)
 }
 #endif
 
+/* ---- the status pixels ------------------------------------------------------------ */
+
+#ifdef CONFIG_SC_PIXELS
+/* Every 20 ms: what each pixel shows now (scorbot_core/pixels.c), handed to the strip. */
+static void pixels_update(float dt, int64_t now_us, const limit_switch_snapshot_t *sw, const current_snapshot_t *cur)
+{
+    static float since_frame_s;
+    since_frame_s += dt;
+    if (since_frame_s < PIXEL_PERIOD_S) {
+        return;
+    }
+    const sc_pix_input_t in = {
+        .self_test_failed = s_self_test_failed,
+        .link_detecting = s_mode == SC_LINK_UNDECIDED,
+        .link_protobuf = s_mode == SC_LINK_PROTOBUF,
+        .link_seen = s_link_seen,
+        .link_idle_s = (float)(now_us - s_link_last_us) * 1e-6f,
+        .chain_valid = !sw->bus_error && !cur->bus_error,
+        .chain_closed = sw->chain_closed,
+        .rail_on = cur->rail_ok,
+    };
+    sc_rgb_t frame[SC_PIXEL_COUNT];
+    sc_pixels_render(&s_pixels, since_frame_s, &s_core, &in, frame);
+    since_frame_s = 0.0f;
+    uint8_t rgb[SC_PIXEL_COUNT * 3];
+    for (int i = 0; i < SC_PIXEL_COUNT; ++i) {
+        rgb[3 * i] = frame[i].r;
+        rgb[3 * i + 1] = frame[i].g;
+        rgb[3 * i + 2] = frame[i].b;
+    }
+    pixel_strip_show(rgb);
+}
+#endif
+
 /* ---- control loop -------------------------------------------------------------- */
 
 static void IRAM_ATTR on_timer(void *arg)
@@ -247,6 +293,9 @@ static void control_task(void *arg)
         sc_core_tick(&s_core, dt, &in, &out);
 #ifdef CONFIG_SC_ENC_SENSE
         enc_sense_report(&in);
+#endif
+#ifdef CONFIG_SC_PIXELS
+        pixels_update(dt, now, &sw, &cur);
 #endif
 
         /* Outputs. */
@@ -434,8 +483,29 @@ void app_main(void)
 
     if (!hardware_ok) {
         /* Self-test failed: BOOT -> FAULT, reported on the link, drivers never enabled. */
+        s_self_test_failed = true;
         sc_core_raise_fault(&s_core, scorbot_v1_FaultCode_FAULT_DRIVER, -1, false);
     }
+
+#ifdef CONFIG_SC_PIXELS
+    /* The status pixels. Not part of the self-test: the arm runs without them. */
+    sc_pixels_init(&s_pixels, CONFIG_SC_PIXEL_MAX_LEVEL);
+    const pixel_strip_config_t pc = {
+        .gpio = CONFIG_SC_PIXEL_GPIO,
+        .count = SC_PIXEL_COUNT,
+#ifdef CONFIG_SC_PIXEL_ORDER_GRB
+        .grb = true,
+#endif
+        .t0h_ns = CONFIG_SC_PIXEL_T0H_NS,
+        .t0l_ns = CONFIG_SC_PIXEL_T0L_NS,
+        .t1h_ns = CONFIG_SC_PIXEL_T1H_NS,
+        .t1l_ns = CONFIG_SC_PIXEL_T1L_NS,
+    };
+    err = pixel_strip_init(&pc);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "status pixels: %s (the controller runs without them)", esp_err_to_name(err));
+    }
+#endif
 
     xTaskCreatePinnedToCore(control_task, "control", 8192, NULL, 20, &s_control_task, 1);
     const esp_timer_create_args_t targs = {.callback = on_timer, .name = "control", .dispatch_method = ESP_TIMER_ISR};

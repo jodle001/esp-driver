@@ -278,8 +278,62 @@ menu "Talos ESP Driver Configuration"
             default 5000
     endmenu
 
-    config SC_PIXEL_GPIO
-        int "Status pixel chain data GPIO (RMT; driver not written yet)"
-        default 21
+    menu "Status pixels"
+        config SC_PIXELS
+            bool "Drive the ten status pixels"
+            default y
+            help
+                Ten addressable RGB pixels, silk "1 2 3 4 5 6 7 SYS LINK E-STOP": one per
+                motor channel, then the controller's state, the Pi link and the e-stop
+                chain (design doc 4.6; the table is in scorbot_core/pixels.c).
+        config SC_PIXEL_GPIO
+            int "Pixel chain data GPIO (RMT)"
+            default 21
+        config SC_PIXEL_MAX_LEVEL
+            int "Brightest level put on the wire (of 255)"
+            depends on SC_PIXELS
+            range 1 255
+            default 32
+            help
+                Every colour is scaled by this before it reaches the wire. The pixel
+                rail's current is part of the encoder 5 V sense margin, so raise it only
+                with the sense inputs watched while all ten pixels are lit.
+        choice SC_PIXEL_ORDER
+            prompt "Colour order on the wire"
+            depends on SC_PIXELS
+            default SC_PIXEL_ORDER_RGB
+            help
+                To confirm at first power: if red and green are swapped, pick the other.
+            config SC_PIXEL_ORDER_RGB
+                bool "RGB (the 5 mm APA106 / PL9823 family, SparkFun 12986)"
+            config SC_PIXEL_ORDER_GRB
+                bool "GRB (WS2812B)"
+        endchoice
+        config SC_PIXEL_T0H_NS
+            int "0 bit: high time (ns)"
+            depends on SC_PIXELS
+            range 100 3000
+            default 400
+            help
+                The four times default to the WS2812 timing the design names, and are
+                rounded down to 50 ns. The 5 mm pixels' own sheets ask for about
+                350 / 1350 ns for a 0 and 1350 / 350 ns for a 1: try those if the chain
+                shows wrong colours at first power.
+        config SC_PIXEL_T0L_NS
+            int "0 bit: low time (ns)"
+            depends on SC_PIXELS
+            range 100 3000
+            default 850
+        config SC_PIXEL_T1H_NS
+            int "1 bit: high time (ns)"
+            depends on SC_PIXELS
+            range 100 3000
+            default 800
+        config SC_PIXEL_T1L_NS
+            int "1 bit: low time (ns)"
+            depends on SC_PIXELS
+            range 100 3000
+            default 450
+    endmenu
 
 endmenu

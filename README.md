@@ -26,6 +26,7 @@ is not built any more; its components (`driver_socket`, `driver_wifi`, `motorhat
 | `components/limit_switch` | the INT line wakes a task that reads every counter (the latch), then which switch, fault line or chain sense moved | device |
 | `components/current` | two ADS1015 boards: seven motor currents and the motor-rail voltage (e-stop detection) | device |
 | `components/nvs_store` | boot count, robot type and per-joint calibration in NVS | device |
+| `components/pixel_strip` | the ten status pixels on one GPIO (RMT): a task sends the frames the control loop hands over; what each pixel shows is decided in `scorbot_core/pixels.c` | device |
 | `main/` | task wiring, the link mode, and the Kconfig pin map of the rev 0.4 board | device |
 | `test/host/` | host build: plant model, the simulator's behaviour tests run against the real core, the dialect's tests, `core_sim` (the core behind a pty) and the end-to-end run with the real operator | host |
 
@@ -33,7 +34,7 @@ is not built any more; its components (`driver_socket`, `driver_wifi`, `motorhat
 
 ```bash
 cd esp-driver/test/host
-make            # builds and runs test_proto (framing vectors), test_core (behaviour spec), test_acl (the dialect)
+make            # builds and runs test_proto (framing vectors), test_core (behaviour spec), test_acl (the dialect), test_pixels (the status pixels' table)
 make core_sim   # then: ./build/core_sim --link /tmp/scorbot_core   (--acl or --protobuf to force the mode)
 make e2e OPERATOR=/tmp/opbuild/bin/erv   # the real operator against core_sim, see below
 ```
@@ -89,8 +90,17 @@ protobuf framing at 921600 (the ROS 2 hardware interface), or auto, which starts
 and switches when the first bytes are not text. The dialect's per-joint sign is
 `SC_ACL_SIGN_MASK`; its scale is the ER-V's count factors in `scorbot_core/acl.c`, applied
 to the NVS calibration, which is pushed once over the protobuf link
-(`scorbot_protocol_cli`, in protobuf or auto mode) before the operator is used. The
-status pixels (`SC_PIXEL_GPIO`) are not driven yet.
+(`scorbot_protocol_cli`, in protobuf or auto mode) before the operator is used.
+
+The ten status pixels ("Status pixels" in menuconfig, IO21 through the level shifter)
+follow the table of the design doc, section 4.6: one per motor channel (amber unhomed,
+blue blinking while homing, green homed, breathing while moving, red blinking on a
+fault), then SYS (the controller's state), LINK (the Pi link: green for the Eshed
+dialect, cyan for protobuf, blinking when idle) and E-STOP (red open, amber closed but
+MOTORS ON not pressed, green latched). `test_pixels` checks that table on the host.
+Every colour is scaled by `SC_PIXEL_MAX_LEVEL` (32 of 255) and the first frame after boot
+is dark. Two things are to be confirmed at first power, both in menuconfig: the colour
+order on the wire (RGB by default) and the bit timing (the WS2812 timing by default).
 
 The encoder 5 V sense ("Encoder 5 V sense" in menuconfig; IO48 and IO38 on the rev 0.5
 board) is read every control tick. With the PC supply off and the Pi still plugged in, the

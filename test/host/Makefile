@@ -34,13 +34,20 @@ $(BUILD)/test_core: test_core.c plant.c plant.h minitest.h $(CORE_SRC) $(PROTO_S
 $(BUILD)/test_acl: test_acl.c plant.c plant.h minitest.h $(CORE_SRC) $(PROTO_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) $(DEFS) -o $@ test_acl.c plant.c $(CORE_SRC) $(PROTO_SRC) -lm
 
+$(BUILD)/test_pixels: test_pixels.c minitest.h $(CORE_SRC) $(PROTO_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(INC) $(DEFS) -o $@ test_pixels.c $(CORE_SRC) $(PROTO_SRC) -lm
+
 $(BUILD)/core_sim: core_sim.c plant.c plant.h $(CORE_SRC) $(PROTO_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) $(DEFS) -o $@ core_sim.c plant.c $(CORE_SRC) $(PROTO_SRC) -lm -lutil
 
-test: $(BUILD)/test_proto $(BUILD)/test_core $(BUILD)/test_acl
+test: $(BUILD)/test_proto $(BUILD)/test_core $(BUILD)/test_acl $(BUILD)/test_pixels
 	./$(BUILD)/test_proto
 	./$(BUILD)/test_core
 	./$(BUILD)/test_acl
+	./$(BUILD)/test_pixels
+
+test_pixels: $(BUILD)/test_pixels
+	./$(BUILD)/test_pixels
 
 test_acl: $(BUILD)/test_acl
 	./$(BUILD)/test_acl
@@ -62,4 +69,4 @@ core_sim: $(BUILD)/core_sim
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test test_proto test_acl core_sim e2e clean
+.PHONY: all test test_proto test_acl test_pixels core_sim e2e clean
